@@ -67,17 +67,41 @@ import {
   staggerIn,
   withThemeTransition,
 } from './ui/motion';
+import { finiteInRange, loadPanelState, PANEL_DEFAULTS, savePanelState } from './ui/panelState';
 
 const store = new LevelStore();
 applyThemeToDOM();
-let activeSidebarTab: 'inspector' | 'metrics' | 'audit' | 'ai' = 'inspector';
+const savedPanels = loadPanelState();
+type SidebarTab = 'inspector' | 'metrics' | 'audit' | 'ai';
+const SIDEBAR_TABS: SidebarTab[] = ['inspector', 'metrics', 'audit', 'ai'];
+let activeSidebarTab: SidebarTab = SIDEBAR_TABS.includes(savedPanels.activeTab as SidebarTab)
+  ? (savedPanels.activeTab as SidebarTab)
+  : 'inspector';
 let activeRoomCategoryFilter: RoomCategoryId | 'all' = 'all';
 let isThemeStudioOpen = false;
 let isNoteCardExpanded = false;
-let isLeftDockCollapsed = false;
-let isRightSidebarCollapsed = false;
-const collapsedDockSections = new Set<string>();
-const collapsedCards = new Set<string>();
+let isLeftDockCollapsed = savedPanels.leftCollapsed === true;
+let isRightSidebarCollapsed = savedPanels.rightCollapsed === true;
+const collapsedDockSections = new Set<string>(savedPanels.collapsedDockSections || []);
+const collapsedCards = new Set<string>(savedPanels.collapsedCards || []);
+
+/** 把当前面板折叠 / 页签状态写入本地存储，刷新后恢复 */
+function persistPanelToggles(): void {
+  savePanelState({
+    leftCollapsed: isLeftDockCollapsed,
+    rightCollapsed: isRightSidebarCollapsed,
+    activeTab: activeSidebarTab,
+    collapsedCards: Array.from(collapsedCards),
+    collapsedDockSections: Array.from(collapsedDockSections),
+  });
+}
+
+/** 把 "🎨 主题配色" 形式的文案拆成 图标 + 文字，窄屏时可只保留图标 */
+function iconLabel(text: string): string {
+  const i = text.indexOf(' ');
+  if (i <= 0 || i > 4) return `<span class="lbl">${text}</span>`;
+  return `<span class="ico">${text.slice(0, i)}</span><span class="lbl">${text.slice(i + 1)}</span>`;
+}
 let isScrubbingNumber = false;
 let aiConsoleInput = JSON.stringify(
   {
@@ -105,7 +129,7 @@ app.innerHTML = `
     <div class="workspace-body" id="workspace-body">
       <!-- Left Pro Level Design Toolbar -->
       <aside class="left-dock" id="left-dock"></aside>
-      <div class="dock-resizer-v" id="resizer-left-dock" title="Drag to resize left toolbar"></div>
+      <div class="dock-resizer-v" id="resizer-left-dock" title="拖拽调整左侧工具栏宽度 · 双击恢复默认"></div>
 
       <!-- Center Viewports -->
       <main class="viewport-stage">
@@ -125,7 +149,7 @@ app.innerHTML = `
           </div>
 
           <!-- Resizer between 3D and 2D column -->
-          <div class="vp-resizer-v" id="resizer-vp-x" title="Drag to resize 3D / 2D viewports"></div>
+          <div class="vp-resizer-v" id="resizer-vp-x" title="拖拽调整 3D / 2D 视口比例 · 双击恢复默认"></div>
 
           <!-- 2D Top-Down Blueprint Viewport -->
           <div class="viewport-pane vp-top">
@@ -137,7 +161,7 @@ app.innerHTML = `
           </div>
 
           <!-- Resizer between Top-Down 2D and Cross-Section 2D -->
-          <div class="vp-resizer-h" id="resizer-vp-y" title="Drag to resize Top-Down / Section viewports"></div>
+          <div class="vp-resizer-h" id="resizer-vp-y" title="拖拽调整 俯视 / 断面 视口比例 · 双击恢复默认"></div>
 
           <!-- 2D Cross-Section Viewport -->
           <div class="viewport-pane vp-sec">
@@ -156,12 +180,12 @@ app.innerHTML = `
         <div class="floating-note-card" id="floating-note-card"></div>
       </main>
 
-      <div class="dock-resizer-v" id="resizer-right-sidebar" title="Drag to resize right inspector"></div>
+      <div class="dock-resizer-v" id="resizer-right-sidebar" title="拖拽调整右侧属性栏宽度 · 双击恢复默认"></div>
       <!-- Right Inspector & Analytics Sidebar -->
       <aside class="right-sidebar" id="right-sidebar">
         <div class="sidebar-tabs" id="sidebar-tabs"></div>
         <div class="sidebar-toolbar" id="sidebar-toolbar">
-          <span>📋 属性与分析面板 (点击卡片标题可折叠)</span>
+          <span class="sidebar-toolbar-hint" title="点击卡片标题可折叠 / 展开">📋 点击卡片标题可折叠</span>
           <div style="display:flex;gap:4px;">
             <button class="chip-toggle" id="btn-expand-all-cards" style="padding:1px 5px;font-size:9px;">▾ 全部展开</button>
             <button class="chip-toggle" id="btn-collapse-all-cards" style="padding:1px 5px;font-size:9px;">▸ 全部折叠</button>
@@ -199,55 +223,75 @@ function setupResizablePanes(): void {
   const root = document.documentElement;
   const grid = document.getElementById('viewports-grid')!;
 
-  const bindDrag = (
-    handleId: string,
-    onMove: (e: MouseEvent) => void
-  ) => {
+  const resizeViewports = () => {
+    vp3D.resize();
+    vpTop.resize();
+    vpSec.resize();
+  };
+
+  // 恢复上次保存的面板尺寸与折叠状态
+  const layout = {
+    leftDockW: finiteInRange(savedPanels.leftDockW, 175, 400) ?? PANEL_DEFAULTS.leftDockW,
+    rightSidebarW: finiteInRange(savedPanels.rightSidebarW, 260, 560) ?? PANEL_DEFAULTS.rightSidebarW,
+    vpSplitX: finiteInRange(savedPanels.vpSplitX, 22, 78) ?? PANEL_DEFAULTS.vpSplitX,
+    vpSplitY: finiteInRange(savedPanels.vpSplitY, 22, 78) ?? PANEL_DEFAULTS.vpSplitY,
+  };
+  type LayoutKey = keyof typeof layout;
+  const applyLayout = () => {
+    root.style.setProperty('--left-dock-w', `${layout.leftDockW}px`);
+    root.style.setProperty('--right-sidebar-w', `${layout.rightSidebarW}px`);
+    root.style.setProperty('--vp-split-x', `${layout.vpSplitX}%`);
+    root.style.setProperty('--vp-split-y', `${layout.vpSplitY}%`);
+  };
+  applyLayout();
+  document.getElementById('left-dock')!.classList.toggle('collapsed', isLeftDockCollapsed);
+  document.getElementById('resizer-left-dock')!.style.display = isLeftDockCollapsed ? 'none' : '';
+  document.getElementById('right-sidebar')!.classList.toggle('collapsed', isRightSidebarCollapsed);
+  document.getElementById('resizer-right-sidebar')!.style.display = isRightSidebarCollapsed ? 'none' : '';
+  resizeViewports();
+
+  const bindDrag = (handleId: string, key: LayoutKey, compute: (e: MouseEvent) => number) => {
     const handle = document.getElementById(handleId)!;
     handle.addEventListener('mousedown', (e) => {
       e.preventDefault();
       handle.classList.add('dragging');
       document.body.classList.add('is-resizing');
       const moveHandler = (ev: MouseEvent) => {
-        onMove(ev);
-        vp3D.resize();
-        vpTop.resize();
-        vpSec.resize();
+        layout[key] = Number(compute(ev).toFixed(1));
+        applyLayout();
+        resizeViewports();
       };
       const upHandler = () => {
         handle.classList.remove('dragging');
         document.body.classList.remove('is-resizing');
         window.removeEventListener('mousemove', moveHandler);
         window.removeEventListener('mouseup', upHandler);
-        vp3D.resize();
-        vpTop.resize();
-        vpSec.resize();
+        resizeViewports();
+        savePanelState({ ...layout });
       };
       window.addEventListener('mousemove', moveHandler);
       window.addEventListener('mouseup', upHandler);
     });
+    // 双击分隔条恢复默认尺寸
+    handle.addEventListener('dblclick', () => {
+      layout[key] = PANEL_DEFAULTS[key];
+      applyLayout();
+      savePanelState({ ...layout });
+      runEveryFrameFor(340, resizeViewports);
+    });
   };
 
-  bindDrag('resizer-left-dock', (e) => {
-    const w = Math.max(175, Math.min(400, e.clientX));
-    root.style.setProperty('--left-dock-w', `${w}px`);
-  });
-
-  bindDrag('resizer-right-sidebar', (e) => {
-    const w = Math.max(260, Math.min(560, window.innerWidth - e.clientX));
-    root.style.setProperty('--right-sidebar-w', `${w}px`);
-  });
-
-  bindDrag('resizer-vp-x', (e) => {
+  bindDrag('resizer-left-dock', 'leftDockW', (e) => Math.max(175, Math.min(400, e.clientX)));
+  bindDrag('resizer-right-sidebar', 'rightSidebarW', (e) =>
+    Math.max(260, Math.min(560, window.innerWidth - e.clientX))
+  );
+  bindDrag('resizer-vp-x', 'vpSplitX', (e) => {
     const rect = grid.getBoundingClientRect();
-    const pct = Math.max(22, Math.min(78, ((e.clientX - rect.left) / rect.width) * 100));
-    root.style.setProperty('--vp-split-x', `${pct.toFixed(1)}%`);
+    return Math.max(22, Math.min(78, ((e.clientX - rect.left) / rect.width) * 100));
   });
-
-  bindDrag('resizer-vp-y', (e) => {
+  bindDrag('resizer-vp-y', 'vpSplitY', (e) => {
     const rect = grid.getBoundingClientRect();
-    const pct = Math.max(22, Math.min(78, ((e.clientY - rect.top) / rect.height) * 100));
-    root.style.setProperty('--vp-split-y', `${pct.toFixed(1)}%`);
+    return Math.max(22, Math.min(78, ((e.clientY - rect.top) / rect.height) * 100));
   });
 }
 
@@ -272,6 +316,15 @@ function enhanceNumberInputs(root: HTMLElement): void {
     handle.className = 'num-scrub-handle';
     handle.title = '按住左右拖拽可连续调节数值 (按住 Shift 微调 / Alt 快调)';
     handle.textContent = '↔';
+    const vecGroup = inp.closest('.vec3-inputs');
+    if (vecGroup) {
+      const axisIdx = Array.from(vecGroup.querySelectorAll('input[type="number"]')).indexOf(inp);
+      const axis = ['x', 'y', 'z'][axisIdx];
+      if (axis) {
+        handle.textContent = axis.toUpperCase();
+        handle.classList.add('axis', `axis-${axis}`);
+      }
+    }
     wrap.appendChild(handle);
 
     wrap.appendChild(inp);
@@ -387,6 +440,25 @@ function enhanceNumberInputs(root: HTMLElement): void {
 }
 
 /**
+ * Paints the filled part of every themed <input type="range"> track (CSS reads --fill)
+ */
+function enhanceRangeInputs(root: HTMLElement): void {
+  root.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((rng) => {
+    const paint = () => {
+      const min = parseFloat(rng.min) || 0;
+      const max = rng.max !== '' ? parseFloat(rng.max) : 100;
+      const pct = max > min ? ((parseFloat(rng.value) - min) / (max - min)) * 100 : 0;
+      rng.style.setProperty('--fill', `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`);
+    };
+    paint();
+    if (rng.dataset.fillBound) return;
+    rng.dataset.fillBound = '1';
+    rng.addEventListener('input', paint);
+    rng.addEventListener('change', paint);
+  });
+}
+
+/**
  * Makes every .panel-card inside a sidebar container collapsible by clicking its .card-title
  */
 function enhanceCollapsibleCards(container: HTMLElement): void {
@@ -444,41 +516,80 @@ function enhanceCollapsibleCards(container: HTMLElement): void {
         collapsedCards.add(cardKey);
         animateCollapse(card, ':scope > .card-body', true);
       }
+      persistPanelToggles();
     };
   });
 }
 
+/**
+ * 重绘会整体替换容器里的 DOM。若焦点正落在容器内带 id 的控件上（例如在输入框里按回车提交），
+ * 重绘后把焦点和光标位置还给同 id 的新控件，避免焦点掉到 <body> 上——那样下一次退格 / Delete
+ * 会被当成"删除选中体块"的全局快捷键。
+ */
+function withFocusPreserved(container: HTMLElement, render: () => void): void {
+  const active = document.activeElement as HTMLElement | null;
+  const id = active && active.id && container.contains(active) ? active.id : '';
+  let selStart: number | null = null;
+  let selEnd: number | null = null;
+  if (id && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) {
+    try {
+      selStart = active.selectionStart;
+      selEnd = active.selectionEnd;
+    } catch {
+      // number 等类型不支持选区
+    }
+  }
+  render();
+  if (!id) return;
+  const next = document.getElementById(id);
+  if (!next || next === active || !container.contains(next)) return;
+  next.focus({ preventScroll: true });
+  if (selStart !== null && selEnd !== null && (next instanceof HTMLInputElement || next instanceof HTMLTextAreaElement)) {
+    try {
+      next.setSelectionRange(selStart, selEnd);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 function renderTopBar(): void {
+  withFocusPreserved(document.getElementById('topbar')!, renderTopBarNow);
+}
+
+function renderTopBarNow(): void {
   const topbar = document.getElementById('topbar')!;
   const lang = getLang();
   const dim = store.getDimensionMode();
 
   topbar.innerHTML = `
     <div class="brand-group">
-      <button id="btn-toggle-left-dock" class="btn" title="折叠/展开左侧工具栏" style="padding:4px 6px;">
+      <button id="btn-toggle-left-dock" class="btn btn-icon" title="折叠/展开左侧工具栏">
         ${isLeftDockCollapsed ? '▶ 工具' : '◀'}
       </button>
       <div class="brand-logo">
         <span class="brand-badge">LB</span>
         <span>Level Builder</span>
       </div>
-      <input id="level-name-input" class="level-title-input" type="text" value="${store.doc.metadata.name}" />
+      <input id="level-name-input" class="level-title-input" type="text" value="${store.doc.metadata.name}" title="关卡名称" />
+      <span class="topbar-sep"></span>
 
       <!-- 3D / 2D 横版 / 2D 俯视 游戏关卡模式切换器 -->
       <div class="dim-mode-bar" title="切换 3D立体关卡 / 2D横版卷轴(平台跳跃/银河城) / 2D俯视角(塞尔达/肉鸽)">
-        <button class="dim-mode-btn ${dim === '3d' ? 'active' : ''}" data-dim="3d">${t('dim3D')}</button>
-        <button class="dim-mode-btn ${dim === '2d_side' ? 'active' : ''}" data-dim="2d_side">${t('dim2DSide')}</button>
-        <button class="dim-mode-btn ${dim === '2d_topdown' ? 'active' : ''}" data-dim="2d_topdown">${t('dim2DTop')}</button>
+        <button class="dim-mode-btn ${dim === '3d' ? 'active' : ''}" data-dim="3d" title="${t('dim3D')}">${iconLabel(t('dim3D'))}</button>
+        <button class="dim-mode-btn ${dim === '2d_side' ? 'active' : ''}" data-dim="2d_side" title="${t('dim2DSide')}">${iconLabel(t('dim2DSide'))}</button>
+        <button class="dim-mode-btn ${dim === '2d_topdown' ? 'active' : ''}" data-dim="2d_topdown" title="${t('dim2DTop')}">${iconLabel(t('dim2DTop'))}</button>
       </div>
       
       <!-- Dedicated New Scene Menu -->
-      <select id="new-scene-select" class="select-pill" style="border-color:var(--accent);font-weight:600;">
+      <span class="topbar-sep"></span>
+      <select id="new-scene-select" class="select-pill select-accent" title="${t('newSceneBtn')}">
         <option value="">${t('newSceneBtn')}...</option>
         <option value="starter">📐 ${t('newSceneEmpty')}</option>
         <option value="zero">📄 ${t('newSceneZero')}</option>
       </select>
 
-      <select id="template-select" class="select-pill" style="max-width:165px;">
+      <select id="template-select" class="select-pill" title="${t('templatePlaceholder')}">
         <option value="">${t('templatePlaceholder')}</option>
         <optgroup label="⭐ 完整综合示范关卡">
           <option value="courtyard">${t('tplCourtyard')}</option>
@@ -498,28 +609,29 @@ function renderTopBar(): void {
     </div>
 
     <div class="topbar-center">
-      <select id="layout-select" class="select-pill">
+      <select id="layout-select" class="select-pill" title="视口布局">
         <option value="split_3d_2d" ${store.layout === 'split_3d_2d' ? 'selected' : ''}>${t('layoutSplit')}</option>
         <option value="only_3d" ${store.layout === 'only_3d' ? 'selected' : ''}>${t('layout3D')}</option>
         <option value="only_top" ${store.layout === 'only_top' ? 'selected' : ''}>${t('layoutTop')}</option>
         <option value="only_section" ${store.layout === 'only_section' ? 'selected' : ''}>${t('layoutSec')}</option>
       </select>
-      <button id="btn-undo" class="btn" title="Ctrl+Z">${t('undo')}</button>
-      <button id="btn-redo" class="btn" title="Ctrl+Y">${t('redo')}</button>
-      <button id="btn-sim-patrol" class="btn btn-sim-patrol ${store.isSimulatingEnemies ? 'active' : ''}">
-        ${store.isSimulatingEnemies ? t('simPatrolStop') : t('simPatrolStart')}
+      <button id="btn-undo" class="btn" title="${t('undo')} (Ctrl+Z)">${iconLabel(t('undo'))}</button>
+      <button id="btn-redo" class="btn" title="${t('redo')} (Ctrl+Y)">${iconLabel(t('redo'))}</button>
+      <span class="topbar-sep"></span>
+      <button id="btn-sim-patrol" class="btn btn-sim-patrol ${store.isSimulatingEnemies ? 'active' : ''}" title="${store.isSimulatingEnemies ? t('simPatrolStop') : t('simPatrolStart')}">
+        ${iconLabel(store.isSimulatingEnemies ? t('simPatrolStop') : t('simPatrolStart'))}
       </button>
-      <button id="btn-playtest" class="btn btn-playtest ${store.isPlaytesting ? 'playing' : ''}">
-        ${store.isPlaytesting ? t('playtestStop') : t('playtestStart')}
+      <button id="btn-playtest" class="btn btn-playtest ${store.isPlaytesting ? 'playing' : ''}" title="${store.isPlaytesting ? t('playtestStop') : t('playtestStart')}">
+        ${iconLabel(store.isPlaytesting ? t('playtestStop') : t('playtestStart'))}
       </button>
     </div>
 
     <div class="topbar-right">
-      <button id="btn-open-theme-studio" class="btn ${isThemeStudioOpen ? 'active' : ''}" title="切换界面颜色模板与自定义色板">
-        🎨 主题配色
+      <button id="btn-open-theme-studio" class="btn ${isThemeStudioOpen ? 'active' : ''}" title="主题配色：切换界面颜色模板与自定义色板">
+        ${iconLabel('🎨 主题配色')}
       </button>
 
-      <select id="export-select" class="select-pill">
+      <select id="export-select" class="select-pill" title="${t('exportMenu')}">
         <option value="">${t('exportMenu')}</option>
         <option value="import_json">${t('importJSON')}</option>
         <option value="md">${t('exportMD')}</option>
@@ -537,12 +649,12 @@ function renderTopBar(): void {
         <option value="ja" ${lang === 'ja' ? 'selected' : ''}>🌐 日本語</option>
       </select>
 
-      <div id="bridge-status" class="bridge-pill ${store.bridgeConnected || store.isOnlineStaticHost() ? '' : 'offline'}">
+      <div id="bridge-status" class="bridge-pill ${store.bridgeConnected || store.isOnlineStaticHost() ? '' : 'offline'}" title="${store.bridgeConnected ? t('bridgeOnline') : store.isOnlineStaticHost() ? '在线版' : t('bridgeOffline')}">
         <span class="dot"></span>
         <span id="bridge-text">${store.bridgeConnected ? t('bridgeOnline') : store.isOnlineStaticHost() ? '🌐 在线版' : t('bridgeOffline')}</span>
       </div>
 
-      <button id="btn-toggle-right-sidebar" class="btn" title="折叠/展开右侧属性分析栏" style="padding:4px 6px;">
+      <button id="btn-toggle-right-sidebar" class="btn btn-icon" title="折叠/展开右侧属性分析栏">
         ${isRightSidebarCollapsed ? '◀ 属性' : '▶'}
       </button>
     </div>
@@ -550,6 +662,7 @@ function renderTopBar(): void {
 
   document.getElementById('btn-toggle-left-dock')!.onclick = () => {
     isLeftDockCollapsed = !isLeftDockCollapsed;
+    persistPanelToggles();
     document.getElementById('left-dock')!.classList.toggle('collapsed', isLeftDockCollapsed);
     document.getElementById('resizer-left-dock')!.style.display = isLeftDockCollapsed ? 'none' : '';
     renderTopBar();
@@ -562,6 +675,7 @@ function renderTopBar(): void {
 
   document.getElementById('btn-toggle-right-sidebar')!.onclick = () => {
     isRightSidebarCollapsed = !isRightSidebarCollapsed;
+    persistPanelToggles();
     document.getElementById('right-sidebar')!.classList.toggle('collapsed', isRightSidebarCollapsed);
     document.getElementById('resizer-right-sidebar')!.style.display = isRightSidebarCollapsed ? 'none' : '';
     renderTopBar();
@@ -685,7 +799,40 @@ function renderTopBar(): void {
   document.getElementById('btn-flip-sec')!.textContent = t('vpSecFlip');
   document.getElementById('btn-reset-sec')!.textContent = t('vpResetCam');
   document.getElementById('status-right')!.textContent = t('statusShortcuts');
+  document.getElementById('status-right')!.title = t('statusShortcuts');
+  fitTopBar();
 }
+
+const TOPBAR_MAX_COMPACT = 4;
+let topBarFitKey = '';
+let topBarFitTier = 0;
+
+/**
+ * 顶栏自适应：内容放不下时逐级收紧（隐藏文字只留图标 → 下拉框缩成图标），
+ * 直到单行放得下为止。按实际内容宽度判断，因此对中/英/日文案长度都成立。
+ */
+function fitTopBar(force = false): void {
+  const topbar = document.getElementById('topbar')!;
+  const applyTier = (tier: number) => {
+    for (let i = 1; i <= TOPBAR_MAX_COMPACT; i++) topbar.classList.toggle(`c${i}`, i <= tier);
+  };
+  // 文案与宽度都没变时直接复用上次结果，避免每次重绘都强制回流
+  const key = `${topbar.clientWidth}|${topbar.textContent}`;
+  if (!force && key === topBarFitKey) {
+    applyTier(topBarFitTier);
+    return;
+  }
+  let tier = 0;
+  for (; tier <= TOPBAR_MAX_COMPACT; tier++) {
+    applyTier(tier);
+    if (topbar.scrollWidth <= topbar.clientWidth + 1) break;
+  }
+  topBarFitKey = key;
+  topBarFitTier = Math.min(tier, TOPBAR_MAX_COMPACT);
+}
+
+new ResizeObserver(() => fitTopBar()).observe(document.getElementById('topbar')!);
+document.fonts?.ready.then(() => fitTopBar(true));
 
 function renderSidebarTabs(): void {
   const tabsEl = document.getElementById('sidebar-tabs')!;
@@ -699,6 +846,7 @@ function renderSidebarTabs(): void {
     btn.onclick = () => {
       if (activeSidebarTab === btn.dataset.tab) return;
       activeSidebarTab = btn.dataset.tab as typeof activeSidebarTab;
+      persistPanelToggles();
       renderSidebarTabs();
       renderSidebar();
       const content = document.getElementById('sidebar-content');
@@ -708,6 +856,10 @@ function renderSidebarTabs(): void {
 }
 
 function renderLeftDock(): void {
+  withFocusPreserved(document.getElementById('left-dock')!, renderLeftDockNow);
+}
+
+function renderLeftDockNow(): void {
   const dock = document.getElementById('left-dock')!;
   const tool = store.activeTool;
   const tf = store.transformMode;
@@ -900,6 +1052,7 @@ function renderLeftDock(): void {
           collapsedDockSections.add(secKey);
           animateCollapse(secEl, ':scope > .dock-section-body', true);
         }
+        persistPanelToggles();
       };
     }
   });
@@ -1062,6 +1215,11 @@ function renderLeftDock(): void {
     };
   }
 
+  // 窄栏下按钮文字可能被截断，补上完整文案的悬停提示
+  dock.querySelectorAll<HTMLElement>('.tool-btn, .role-chip').forEach((btn) => {
+    if (!btn.title) btn.title = (btn.textContent || '').trim();
+  });
+
   enhanceNumberInputs(dock);
 }
 
@@ -1141,6 +1299,21 @@ function renderFloatingNoteCard(): void {
 
   card.classList.remove('leaving');
   card.classList.add('visible');
+
+  // 备注卡的输入框是边输入边写回 store 的；如果每次按键都重绘卡片，输入框会被替换、
+  // 焦点丢失（中文输入法的候选也会被打断）。同一对象、展开状态下正在输入时保持现有 DOM。
+  const cardStateKey = `${blk ? 'block' : 'poi'}:${(blk || poi)!.id}:${isNoteCardExpanded ? 1 : 0}`;
+  const focusedEl = document.activeElement;
+  if (
+    isNoteCardExpanded &&
+    card.dataset.stateKey === cardStateKey &&
+    focusedEl instanceof HTMLElement &&
+    card.contains(focusedEl) &&
+    (focusedEl.tagName === 'INPUT' || focusedEl.tagName === 'TEXTAREA')
+  ) {
+    return;
+  }
+  card.dataset.stateKey = cardStateKey;
 
   const allTargets = [
     ...store.doc.blocks.map((b) => ({ id: b.id, label: `[白盒] ${b.name}` })),
@@ -1262,7 +1435,12 @@ function renderFloatingNoteCard(): void {
         const defNote = btn.dataset.fncNote!;
         updateObj({
           designTag: tag,
-          notes: obj.notes && obj.notes.trim().length > 0 ? obj.notes : defNote,
+          // 读取最新的备注（卡片在输入期间不重绘，闭包里的 obj 可能是旧快照）
+          notes: (() => {
+            const cur = blk ? store.getSelectedBlock() : store.getSelectedPOI();
+            const curNotes = cur?.notes ?? obj.notes;
+            return curNotes && curNotes.trim().length > 0 ? curNotes : defNote;
+          })(),
         });
         renderFloatingNoteCard();
         renderSidebar();
@@ -1287,6 +1465,10 @@ function renderFloatingNoteCard(): void {
 }
 
 function renderSidebar(): void {
+  withFocusPreserved(document.getElementById('sidebar-content')!, renderSidebarNow);
+}
+
+function renderSidebarNow(): void {
   const container = document.getElementById('sidebar-content')!;
   if (activeSidebarTab === 'inspector') {
     renderInspectorTab(container);
@@ -1299,6 +1481,7 @@ function renderSidebar(): void {
   }
   enhanceCollapsibleCards(container);
   enhanceNumberInputs(container);
+  enhanceRangeInputs(container);
 
   const btnExpandAll = document.getElementById('btn-expand-all-cards');
   const btnCollapseAll = document.getElementById('btn-collapse-all-cards');
@@ -1308,6 +1491,7 @@ function renderSidebar(): void {
         if (c.dataset.cardKey) collapsedCards.delete(c.dataset.cardKey);
         if (c.classList.contains('collapsed')) animateCollapse(c, ':scope > .card-body', false);
       });
+      persistPanelToggles();
     };
   }
   if (btnCollapseAll) {
@@ -1316,6 +1500,7 @@ function renderSidebar(): void {
         if (c.dataset.cardKey) collapsedCards.add(c.dataset.cardKey);
         if (!c.classList.contains('collapsed')) animateCollapse(c, ':scope > .card-body', true);
       });
+      persistPanelToggles();
     };
   }
 }
@@ -2959,7 +3144,17 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-store.subscribe(() => {
+/**
+ * store 通知 → 界面重绘。拖拽 Gizmo / 数值时一帧内会连续通知很多次，这里合并成每帧最多重绘一次
+ * （页面在后台时 rAF 不触发，用定时器兜底）。
+ */
+let uiRenderQueued = false;
+let uiRenderFallbackTimer: number | undefined;
+
+function flushUIRender(): void {
+  if (!uiRenderQueued) return;
+  uiRenderQueued = false;
+  window.clearTimeout(uiRenderFallbackTimer);
   renderTopBar();
   if (!isScrubbingNumber) {
     renderLeftDock();
@@ -2969,6 +3164,13 @@ store.subscribe(() => {
   renderFloatingNoteCard();
   renderSidebarTabs();
   updateStatusBar();
+}
+
+store.subscribe(() => {
+  if (uiRenderQueued) return;
+  uiRenderQueued = true;
+  requestAnimationFrame(flushUIRender);
+  uiRenderFallbackTimer = window.setTimeout(flushUIRender, 120);
 });
 
 renderAllUI();

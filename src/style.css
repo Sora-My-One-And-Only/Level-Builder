@@ -1771,3 +1771,450 @@ html.theme-transitioning *::after {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ==========================================================================
+   Panel Polish Layer — 面板布局与表单控件优化
+   (顶栏/图层栏自适应不换行 · 紧凑数值框 · XYZ 轴向色标 · 开关/滑条主题化 ·
+    状态栏防重叠 · 键盘焦点可见)
+   ========================================================================== */
+:root {
+  --axis-x: #f87171;
+  --axis-y: #4ade80;
+  --axis-z: #60a5fa;
+}
+
+/* ---- 顶栏：单行分组，窄屏逐级收起文字，只在极窄时横向滚动 ---- */
+.topbar {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  height: 42px;
+  padding: 0 8px;
+}
+
+.topbar::-webkit-scrollbar {
+  display: none;
+}
+
+.brand-group,
+.topbar-center,
+.topbar-right {
+  flex-shrink: 0;
+}
+
+.topbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-light);
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+
+.btn-icon {
+  padding: 4px 7px;
+  justify-content: center;
+}
+
+.btn .ico,
+.dim-mode-btn .ico {
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.dim-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.select-pill {
+  font-family: inherit;
+  text-overflow: ellipsis;
+  max-width: 150px;
+  height: 25px;
+}
+
+.select-pill.select-accent {
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.level-title-input {
+  font-family: inherit;
+  flex-shrink: 1;
+  min-width: 72px;
+}
+
+#new-scene-select {
+  max-width: 96px;
+}
+
+#lang-select {
+  max-width: 92px;
+}
+
+.topbar .btn .lbl,
+.topbar .dim-mode-btn .lbl,
+#bridge-text {
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 紧凑档位 c1→c4 由 fitTopBar() 按实际内容宽度逐级叠加（与界面语言无关） */
+.topbar.c1 .brand-logo > span:not(.brand-badge),
+.topbar.c1 #btn-undo .lbl,
+.topbar.c1 #btn-redo .lbl {
+  display: none;
+}
+
+.topbar.c1 #template-select,
+.topbar.c1 #layout-select,
+.topbar.c1 #export-select {
+  max-width: 124px;
+}
+
+.topbar.c2 #btn-open-theme-studio .lbl,
+.topbar.c2 #btn-sim-patrol .lbl {
+  display: none;
+}
+
+.topbar.c2 .select-pill {
+  max-width: 96px;
+}
+
+.topbar.c2 #bridge-text {
+  max-width: 84px;
+}
+
+.topbar.c3 .select-pill {
+  width: 46px;
+  max-width: 46px;
+  text-overflow: clip;
+}
+
+.topbar.c4 .dim-mode-btn:not(.active) .lbl,
+.topbar.c4 #btn-playtest .lbl,
+.topbar.c4 #bridge-text,
+.topbar.c4 .topbar-sep {
+  display: none;
+}
+
+.topbar.c4 .level-title-input {
+  width: 84px;
+}
+
+/* ---- 图层栏：不换行，超出时横向滚动 ---- */
+.overlay-bar {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  height: 30px;
+  padding: 0 8px;
+}
+
+.overlay-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.overlay-group {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.overlay-group > span {
+  white-space: nowrap;
+}
+
+/* ---- 侧栏分隔条：1px 细线 + 5px 拖拽热区 ---- */
+.dock-resizer-v {
+  background: linear-gradient(
+    to right,
+    transparent 2px,
+    var(--border-light) 2px,
+    var(--border-light) 3px,
+    transparent 3px
+  );
+}
+
+/* ---- 表单行：标签列随面板宽度伸缩，控件列永不溢出 ---- */
+.form-row {
+  grid-template-columns: minmax(64px, 30%) minmax(0, 1fr);
+}
+
+.left-dock .form-row {
+  grid-template-columns: minmax(56px, 36%) minmax(0, 1fr);
+}
+
+.form-row > input[type='checkbox'] {
+  justify-self: start;
+}
+
+.dock-section-body .btn,
+.card-body .btn {
+  min-height: 24px;
+}
+
+.tool-btn {
+  min-height: 26px;
+}
+
+/* ---- 数值框：按自身宽度自适应，窄时依次隐藏步进箭头与拖拽把手 ---- */
+.num-scrub-wrap {
+  container-type: inline-size;
+  min-width: 0;
+  height: 24px;
+}
+
+.num-scrub-wrap input[type='number'] {
+  width: 0;
+  text-overflow: ellipsis;
+}
+
+@container (max-width: 84px) {
+  .num-step-btns {
+    display: none;
+  }
+}
+
+@container (max-width: 58px) {
+  .num-scrub-handle:not(.axis) {
+    display: none;
+  }
+}
+
+/* XYZ 轴向色标（位置 / 尺寸 / 旋转），同时作为拖拽把手 */
+.num-scrub-handle.axis {
+  width: 15px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  background: transparent;
+  border-right: none;
+  box-shadow: inset 2px 0 0 currentColor;
+}
+
+.num-scrub-handle.axis-x {
+  color: var(--axis-x);
+}
+
+.num-scrub-handle.axis-y {
+  color: var(--axis-y);
+}
+
+.num-scrub-handle.axis-z {
+  color: var(--axis-z);
+}
+
+.num-scrub-handle.axis:hover,
+.num-scrub-wrap.scrubbing .num-scrub-handle.axis {
+  color: var(--accent-contrast);
+  background: var(--accent);
+  box-shadow: none;
+}
+
+/* ---- 复选框 → 主题化开关 ---- */
+input[type='checkbox'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 28px !important;
+  height: 16px !important;
+  flex-shrink: 0;
+  border-radius: 99px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-light);
+  position: relative;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
+}
+
+input[type='checkbox']::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition:
+    transform var(--dur-med) var(--ease-out),
+    background-color var(--dur-fast) ease;
+}
+
+input[type='checkbox']:hover {
+  border-color: var(--accent);
+}
+
+input[type='checkbox']:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type='checkbox']:checked::after {
+  transform: translateX(12px);
+  background: var(--accent-contrast);
+}
+
+/* ---- 滑条：主题色轨道 + 已填充进度 ---- */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+  --fill: 0%;
+}
+
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--bg-3) var(--fill));
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-0);
+  box-shadow: 0 0 0 1px var(--accent);
+  transition: transform var(--dur-fast) var(--ease-spring);
+}
+
+input[type='range']:hover::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
+input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-3);
+}
+
+input[type='range']::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-0);
+}
+
+/* ---- 右侧栏：卡片标题、工具条、大纲列表 ---- */
+.sidebar-content {
+  scrollbar-gutter: stable;
+}
+
+.sidebar-toolbar {
+  gap: 8px;
+}
+
+.sidebar-toolbar-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-toolbar > div {
+  flex-shrink: 0;
+}
+
+.card-title {
+  min-height: 30px;
+}
+
+.card-title > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-title > div,
+.card-title > button {
+  flex-shrink: 0;
+}
+
+.card-title .btn {
+  padding: 2px 7px;
+  font-size: 10px;
+}
+
+.outliner-list {
+  max-height: min(340px, 38vh);
+}
+
+.outliner-item {
+  gap: 8px;
+}
+
+.outliner-item > div {
+  min-width: 0;
+}
+
+.outliner-item > div > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outliner-item > span {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ---- 状态栏：左右两段各自省略，不再互相重叠 ---- */
+.statusbar {
+  gap: 16px;
+}
+
+#status-left,
+#status-right {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#status-left {
+  flex: 0 1 auto;
+}
+
+#status-right {
+  flex: 0 2 auto;
+  opacity: 0.8;
+}
+
+/* ---- 键盘焦点可见 ---- */
+.btn:focus-visible,
+.tool-btn:focus-visible,
+.role-chip:focus-visible,
+.chip-toggle:focus-visible,
+.tab-btn:focus-visible,
+.dim-mode-btn:focus-visible,
+.select-pill:focus-visible,
+.room-cat-pill:focus-visible,
+.design-tag-chip:focus-visible,
+input[type='checkbox']:focus-visible,
+input[type='range']:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
