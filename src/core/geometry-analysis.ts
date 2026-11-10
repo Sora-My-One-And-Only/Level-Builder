@@ -2,6 +2,7 @@ import {
   AICommandAction,
   AuditIssue,
   BlockRole,
+  BlockType,
   CrossSectionSliceItem,
   FlowPathType,
   JumpEvaluation,
@@ -72,6 +73,10 @@ const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 
 export function localToWorldPoint(local: Vec3, pos: Vec3, rotDeg: Vec3): Vec3 {
+  // 绝大多数白盒体块没有旋转：直接平移，省掉 6 次三角函数
+  if (rotDeg[0] === 0 && rotDeg[1] === 0 && rotDeg[2] === 0) {
+    return [local[0] + pos[0], local[1] + pos[1], local[2] + pos[2]];
+  }
   const [rx, ry, rz] = [rotDeg[0] * DEG2RAD, rotDeg[1] * DEG2RAD, rotDeg[2] * DEG2RAD];
   const [x, y, z] = local;
   const cx = Math.cos(rx), sx = Math.sin(rx);
@@ -94,6 +99,9 @@ export function localToWorldPoint(local: Vec3, pos: Vec3, rotDeg: Vec3): Vec3 {
 }
 
 export function worldToLocalPoint(world: Vec3, pos: Vec3, rotDeg: Vec3): Vec3 {
+  if (rotDeg[0] === 0 && rotDeg[1] === 0 && rotDeg[2] === 0) {
+    return [world[0] - pos[0], world[1] - pos[1], world[2] - pos[2]];
+  }
   const [rx, ry, rz] = [-rotDeg[0] * DEG2RAD, -rotDeg[1] * DEG2RAD, -rotDeg[2] * DEG2RAD];
   const dx = world[0] - pos[0];
   const dy = world[1] - pos[1];
@@ -148,7 +156,109 @@ function makeBoxTrianglesLocal(min: Vec3, max: Vec3): Triangle3D[] {
   return idx.map(([i, j, k]) => ({ a: v[i], b: v[j], c: v[k] }));
 }
 
+/* --------------------------------------------------------------------------
+ * 几何缓存层
+ * 射线检测 / 视野多边形 / 断面切片会对同一个体块反复求世界空间三角面和 AABB。
+ * 按体块对象缓存结果，并在每次读取时核对几何字段（体块可能被原地修改），
+ * 字段没变就直接复用。返回的数组是共享的，调用方只读、不得修改。
+ * ------------------------------------------------------------------------ */
+interface BlockGeomEntry {
+  type: BlockType;
+  steps: number | undefined;
+  px: number; py: number; pz: number;
+  sx: number; sy: number; sz: number;
+  rx: number; ry: number; rz: number;
+  tris: Triangle3D[] | null;
+  aabb: { min: Vec3; max: Vec3 } | null;
+}
+
+const blockGeomCache = new WeakMap<LevelBlock, BlockGeomEntry>();
+
+function getBlockGeomEntry(block: LevelBlock): BlockGeomEntry {
+  const p = block.position;
+  const s = block.size;
+  const r = block.rotation;
+  const e = blockGeomCache.get(block);
+  if (
+    e &&
+    e.type === block.type && e.steps === block.steps &&
+    e.px === p[0] && e.py === p[1] && e.pz === p[2] &&
+    e.sx === s[0] && e.sy === s[1] && e.sz === s[2] &&
+    e.rx === r[0] && e.ry === r[1] && e.rz === r[2]
+  ) {
+    return e;
+  }
+  const fresh: BlockGeomEntry = {
+    type: block.type,
+    steps: block.steps,
+    px: p[0], py: p[1], pz: p[2],
+    sx: s[0], sy: s[1], sz: s[2],
+    rx: r[0], ry: r[1], rz: r[2],
+    tris: null,
+    aabb: null,
+  };
+  blockGeomCache.set(block, fresh);
+  return fresh;
+}
+
+const BLOCK_TYPE_CODE: Record<string, number> = { box: 1, ramp: 2, stairs: 3, cylinder: 4, arch: 5 };
+
+/**
+ * 对所有会影响碰撞 / 遮挡 / 寻路的体块字段求一个签名，用作分析结果缓存的失效依据。
+ * 两路独立的 32 位滚动哈希拼接，碰撞概率可以忽略。
+ */
+export function computeBlocksSignature(blocks: LevelBlock[]): string {
+  let h1 = 0x811c9dc5 | 0;
+  let h2 = 0x1b873593 | 0;
+  const mix = (v: number) => {
+    const n = Math.round(v * 1000) | 0;
+    h1 = Math.imul(h1 ^ n, 0x01000193);
+    h2 = (Math.imul(h2, 31) + n) | 0;
+  };
+  const mixStr = (str: string) => {
+    for (let i = 0; i < str.length; i++) mix(str.charCodeAt(i) / 1000);
+  };
+  for (const b of blocks) {
+    mix(BLOCK_TYPE_CODE[b.type] ?? 0);
+    mixStr(b.role);
+    mix(b.hidden ? 1 : 0);
+    mix(b.steps ?? 0);
+    mix(b.position[0]); mix(b.position[1]); mix(b.position[2]);
+    mix(b.size[0]); mix(b.size[1]); mix(b.size[2]);
+    mix(b.rotation[0]); mix(b.rotation[1]); mix(b.rotation[2]);
+  }
+  return `${blocks.length}:${h1 >>> 0}:${h2 >>> 0}`;
+}
+
+/** 小型 LRU：缓存昂贵的分析结果（视野多边形 / A* 路径） */
+class AnalysisCache<T> {
+  private map = new Map<string, T>();
+  constructor(private readonly capacity: number) {}
+
+  get(key: string): T | undefined {
+    const hit = this.map.get(key);
+    if (hit !== undefined) {
+      this.map.delete(key);
+      this.map.set(key, hit);
+    }
+    return hit;
+  }
+
+  set(key: string, value: T): void {
+    this.map.set(key, value);
+    if (this.map.size > this.capacity) {
+      this.map.delete(this.map.keys().next().value as string);
+    }
+  }
+}
+
 export function getBlockTrianglesWorld(block: LevelBlock): Triangle3D[] {
+  const entry = getBlockGeomEntry(block);
+  if (!entry.tris) entry.tris = buildBlockTrianglesWorld(block);
+  return entry.tris;
+}
+
+function buildBlockTrianglesWorld(block: LevelBlock): Triangle3D[] {
   const [w, h, d] = block.size;
   const hx = w / 2;
   const hy = h / 2;
@@ -234,6 +344,12 @@ export function getBlockTopFootprint(block: LevelBlock): Vec2[] {
 }
 
 export function getBlockWorldAABB(block: LevelBlock): { min: Vec3; max: Vec3 } {
+  const entry = getBlockGeomEntry(block);
+  if (!entry.aabb) entry.aabb = buildBlockWorldAABB(block);
+  return entry.aabb;
+}
+
+function buildBlockWorldAABB(block: LevelBlock): { min: Vec3; max: Vec3 } {
   const [w, h, d] = block.size;
   const hx = w / 2, hy = h / 2, hz = d / 2;
   const corners: Vec3[] = [
@@ -597,6 +713,11 @@ export function sampleWalkableElevationAt(
     if (b.hidden || (!ROLE_META[b.role]?.walkable && b.type !== 'ramp' && b.type !== 'stairs')) {
       continue;
     }
+    // 先用缓存的世界 AABB 粗筛（它包住旋转后的体块），绝大多数体块在这里就被排除
+    const aabb = getBlockWorldAABB(b);
+    if (wx < aabb.min[0] - 0.05 || wx > aabb.max[0] + 0.05 || wz < aabb.min[2] - 0.05 || wz > aabb.max[2] + 0.05) {
+      continue;
+    }
     const local = worldToLocalPoint([wx, b.position[1], wz], b.position, b.rotation);
     const hx = b.size[0] / 2 + 0.05;
     const hz = b.size[2] / 2 + 0.05;
@@ -620,7 +741,7 @@ export function sampleWalkableElevationAt(
     }
   }
 
-  return { groundY: Number(bestY.toFixed(2)), blockId: bestId };
+  return { groundY: Math.round(bestY * 100) / 100, blockId: bestId };
 }
 
 /**
@@ -629,10 +750,30 @@ export function sampleWalkableElevationAt(
  * 3D slanted rays to the ground surface at each distance step so walkable floor ledges (2F balcony)
  * and elevated platforms properly occlude sightlines!
  */
+const visibilityCache = new AnalysisCache<Vec3[]>(96);
+
 export function computeVisibilityPolygon(
   poi: LevelPOI,
   blocks: LevelBlock[],
   rayCount = 56
+): Vec3[] {
+  // 视野多边形只取决于观察点参数与场景几何；3D / 俯视视口以及平移缩放重绘都会命中缓存
+  const key = [
+    poi.position[0], poi.position[1], poi.position[2],
+    poi.yaw, poi.fov, poi.visionRange, poi.eyeHeight,
+    rayCount, computeBlocksSignature(blocks),
+  ].join('|');
+  const cached = visibilityCache.get(key);
+  if (cached) return cached.slice();
+  const result = computeVisibilityPolygonUncached(poi, blocks, rayCount);
+  visibilityCache.set(key, result);
+  return result.slice();
+}
+
+function computeVisibilityPolygonUncached(
+  poi: LevelPOI,
+  blocks: LevelBlock[],
+  rayCount: number
 ): Vec3[] {
   const eyeY = poi.position[1] + (poi.eyeHeight ?? 1.65);
   const origin: Vec3 = [poi.position[0], eyeY, poi.position[2]];
@@ -744,7 +885,27 @@ export function computeVisibilityPolygon(
  * - Avoids walls, cover blocks, hazards, and unwalkable drops/cliffs
  * - Transitions between 1F and 2F via stairs and ramps!
  */
+const pathCache = new AnalysisCache<Vec3[]>(160);
+
 export function computeEnemyPathAStar(
+  start: Vec3,
+  goal: Vec3,
+  doc: LevelDocument
+): Vec3[] {
+  const mp = doc.metricsProfile;
+  const key = [
+    start[0], start[1], start[2], goal[0], goal[1], goal[2],
+    mp.playerRadius, mp.playerHeight, mp.maxStepHeight,
+    computeBlocksSignature(doc.blocks),
+  ].join('|');
+  const cached = pathCache.get(key);
+  if (cached) return cached.slice();
+  const result = computeEnemyPathAStarUncached(start, goal, doc).map((p) => [p[0], p[1], p[2]] as Vec3);
+  pathCache.set(key, result);
+  return result.slice();
+}
+
+function computeEnemyPathAStarUncached(
   start: Vec3,
   goal: Vec3,
   doc: LevelDocument
@@ -790,7 +951,8 @@ export function computeEnemyPathAStar(
     return false;
   };
 
-  const keyOf = (x: number, z: number) => `${x.toFixed(1)},${z.toFixed(1)}`;
+  // 网格步长 1m、搜索范围 ±36m：用整数键代替字符串键（每次扩展节点省两次 toFixed）
+  const keyOf = (x: number, z: number) => (Math.round(x / step) + 4096) * 8192 + (Math.round(z / step) + 4096);
   interface Node {
     x: number;
     y: number;
@@ -809,7 +971,7 @@ export function computeEnemyPathAStar(
   };
 
   const open: Node[] = [startNode];
-  const bestG = new Map<string, number>();
+  const bestG = new Map<number, number>();
   bestG.set(keyOf(sx, sz), 0);
 
   const dirs: [number, number, number][] = [
@@ -1492,11 +1654,40 @@ function uid(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function applyAICommand(doc: LevelDocument, cmd: AICommandAction): {
+interface AICommandResult {
   doc: LevelDocument;
   message: string;
   affectedIds: string[];
-} {
+}
+
+function sanitizeVec3(v: unknown, fallback: Vec3, minEach?: number): Vec3 {
+  const src = Array.isArray(v) ? v : fallback;
+  const out: Vec3 = [fallback[0], fallback[1], fallback[2]];
+  for (let i = 0; i < 3; i++) {
+    const n = Number(src[i]);
+    if (Number.isFinite(n)) out[i] = minEach !== undefined ? Math.max(minEach, Math.abs(n)) : n;
+  }
+  return out;
+}
+
+/**
+ * 执行一条 AI / CLI / MCP 指令。指令来自外部（JSON 文本、网络请求），因此这里保证
+ * 永不抛异常：格式不对、动作未知或缺少必填字段时，原样返回文档并给出可读的错误信息。
+ */
+export function applyAICommand(doc: LevelDocument, cmd: AICommandAction): AICommandResult {
+  const action = (cmd as { action?: unknown } | null | undefined)?.action;
+  if (typeof action !== 'string') {
+    return { doc, message: 'Invalid command: expected an object with an "action" field', affectedIds: [] };
+  }
+  try {
+    const res = applyAICommandUnchecked(doc, cmd) as AICommandResult | undefined;
+    return res ?? { doc, message: `Unknown action "${action}"`, affectedIds: [] };
+  } catch (err) {
+    return { doc, message: `Command "${action}" failed: ${(err as Error).message}`, affectedIds: [] };
+  }
+}
+
+function applyAICommandUnchecked(doc: LevelDocument, cmd: AICommandAction): AICommandResult {
   const next: LevelDocument = structuredClone(doc);
   if (!next.sightlines) next.sightlines = [];
   next.metadata.updatedAt = new Date().toISOString();
@@ -1504,16 +1695,17 @@ export function applyAICommand(doc: LevelDocument, cmd: AICommandAction): {
 
   switch (cmd.action) {
     case 'add_block': {
-      const id = cmd.block.id || uid('blk');
+      // 外部指定的 id 若已存在则换一个，避免出现两个同 id 的体块
+      const id = cmd.block.id && !next.blocks.some((b) => b.id === cmd.block.id) ? cmd.block.id : uid('blk');
       const newBlock: LevelBlock = {
         id,
         name: cmd.block.name || `白盒_${next.blocks.length + 1}`,
         type: cmd.block.type || 'box',
         role: cmd.block.role || 'walkable',
-        position: cmd.block.position || [0, 0.5, 0],
-        size: cmd.block.size || [4, 1, 4],
-        rotation: cmd.block.rotation || [0, 0, 0],
-        floor: cmd.block.floor ?? 0,
+        position: sanitizeVec3(cmd.block.position, [0, 0.5, 0]),
+        size: sanitizeVec3(cmd.block.size, [4, 1, 4], 0.05),
+        rotation: sanitizeVec3(cmd.block.rotation, [0, 0, 0]),
+        floor: Number.isFinite(Number(cmd.block.floor)) ? Number(cmd.block.floor) : 0,
         color: cmd.block.color,
         steps: cmd.block.steps,
         designTag: cmd.block.designTag,
@@ -1531,7 +1723,12 @@ export function applyAICommand(doc: LevelDocument, cmd: AICommandAction): {
       if (idx === -1) {
         return { doc: next, message: `Block "${cmd.id}" not found`, affectedIds: [] };
       }
-      next.blocks[idx] = { ...next.blocks[idx], ...cmd.patch, id: cmd.id };
+      const prevBlock = next.blocks[idx];
+      const merged: LevelBlock = { ...prevBlock, ...cmd.patch, id: cmd.id };
+      merged.position = sanitizeVec3(merged.position, prevBlock.position);
+      merged.size = sanitizeVec3(merged.size, prevBlock.size, 0.05);
+      merged.rotation = sanitizeVec3(merged.rotation, prevBlock.rotation);
+      next.blocks[idx] = merged;
       affectedIds.push(cmd.id);
       return { doc: next, message: `Updated block "${next.blocks[idx].name}" (${cmd.id})`, affectedIds };
     }

@@ -65,8 +65,20 @@ export class ViewportTop2D {
     const ro = new ResizeObserver(() => this.resize());
     ro.observe(container);
     this.resize();
-    this.store.subscribeViewports(() => this.render());
+    this.store.subscribeViewports(() => this.requestRender());
     this.store.onFrameSelected(() => this.frameSelected());
+  }
+
+  private renderQueued = false;
+
+  /** store 通知触发的重绘合并到下一帧：同一帧内多次通知只画一次 */
+  private requestRender(): void {
+    if (this.renderQueued) return;
+    this.renderQueued = true;
+    requestAnimationFrame(() => {
+      this.renderQueued = false;
+      this.render();
+    });
   }
 
   public resize(): void {

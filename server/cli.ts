@@ -1,6 +1,3 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import {
   applyAICommand,
   auditLevel,
@@ -10,34 +7,11 @@ import {
 } from '../src/core/geometry-analysis';
 import { createEmptyLevel, createStarterLevel, createTacticalCourtyardLevel, createVerticalRuinsLevel } from '../src/core/presets';
 import { AICommandAction, BlockRole, BlockType, LevelDocument, POICategory, Vec2, Vec3 } from '../src/core/types';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const LEVEL_FILE_PATH = path.resolve(__dirname, '../levels/current.level.json');
-
-function loadLevel(): LevelDocument {
-  const dir = path.dirname(LEVEL_FILE_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(LEVEL_FILE_PATH)) {
-    const doc = createTacticalCourtyardLevel();
-    fs.writeFileSync(LEVEL_FILE_PATH, JSON.stringify(doc, null, 2), 'utf-8');
-    return doc;
-  }
-  return JSON.parse(fs.readFileSync(LEVEL_FILE_PATH, 'utf-8')) as LevelDocument;
-}
+import { loadLevelFile, saveLevelViaBridgeOrFile } from './level-io';
 
 async function saveAndSync(doc: LevelDocument, message: string): Promise<void> {
-  fs.writeFileSync(LEVEL_FILE_PATH, JSON.stringify(doc, null, 2), 'utf-8');
-  // Best-effort push to running bridge server for instant 0ms WebSocket broadcast
-  try {
-    await fetch('http://127.0.0.1:4399/api/level', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ doc, message }),
-    });
-  } catch {
-    // Bridge server may not be running; file write still succeeds
-  }
+  // A running Bridge writes the file and broadcasts to the web editor; otherwise the file is written directly
+  await saveLevelViaBridgeOrFile(doc, message);
 }
 
 function parseVec3(str: string | undefined, fallback: Vec3 = [0, 0, 0]): Vec3 {
@@ -63,7 +37,11 @@ function getFlag(args: string[], flag: string): string | undefined {
 async function main() {
   const args = process.argv.slice(2);
   const sub = args[0] || 'help';
-  const doc = loadLevel();
+  if (sub === 'help' || sub === '--help' || sub === '-h') {
+    printHelp();
+    return;
+  }
+  const doc = loadLevelFile();
 
   if (sub === 'status' || sub === 'audit') {
     const audit = auditLevel(doc);
@@ -111,6 +89,7 @@ async function main() {
         rotation: parseVec3(getFlag(args, '--rot'), [0, 0, 0]),
         floor: Number(getFlag(args, '--floor') ?? 0),
         notes: getFlag(args, '--notes'),
+        color: getFlag(args, '--color'),
       },
     };
     const res = applyAICommand(doc, cmd);
@@ -133,6 +112,8 @@ async function main() {
     if (getFlag(args, '--size')) patch.size = parseVec3(getFlag(args, '--size'));
     if (getFlag(args, '--rot')) patch.rotation = parseVec3(getFlag(args, '--rot'));
     if (getFlag(args, '--floor')) patch.floor = Number(getFlag(args, '--floor'));
+    if (getFlag(args, '--notes') !== undefined) patch.notes = getFlag(args, '--notes');
+    if (getFlag(args, '--color')) patch.color = getFlag(args, '--color');
     const res = applyAICommand(doc, { action: 'update_block', id, patch });
     await saveAndSync(res.doc, `[CLI] ${res.message}`);
     console.log(JSON.stringify({ ok: true, message: res.message, affectedIds: res.affectedIds }, null, 2));
@@ -238,7 +219,13 @@ async function main() {
       console.error('Error: Provide JSON command via --json \'{"action":"..."}\'');
       process.exit(1);
     }
-    const parsed = JSON.parse(raw) as AICommandAction | AICommandAction[];
+    let parsed: AICommandAction | AICommandAction[];
+    try {
+      parsed = JSON.parse(raw) as AICommandAction | AICommandAction[];
+    } catch (err) {
+      console.error(`Error: --json is not valid JSON (${(err as Error).message})`);
+      process.exit(1);
+    }
     const list = Array.isArray(parsed) ? parsed : [parsed];
     let cur = doc;
     const messages: string[] = [];
@@ -269,6 +256,12 @@ async function main() {
     return;
   }
 
+  console.error(`Unknown command "${sub}".`);
+  printHelp();
+  process.exitCode = 1;
+}
+
+function printHelp(): void {
   console.log(`
 LevelForge AI & Designer CLI (Supports Claude Code & OpenAI Codex)
 ==================================================================

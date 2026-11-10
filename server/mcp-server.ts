@@ -1,7 +1,4 @@
-import fs from 'fs';
-import path from 'path';
 import readline from 'readline';
-import { fileURLToPath } from 'url';
 import {
   applyAICommand,
   auditLevel,
@@ -9,35 +6,19 @@ import {
   evaluateJumpLink,
   raycastLevel3D,
 } from '../src/core/geometry-analysis';
-import { createTacticalCourtyardLevel } from '../src/core/presets';
-import { AICommandAction, LevelDocument, Vec3 } from '../src/core/types';
+import { AICommandAction, Vec3 } from '../src/core/types';
+import { loadLevelFile, saveLevelViaBridgeOrFile } from './level-io';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const LEVEL_FILE_PATH = path.resolve(__dirname, '../levels/current.level.json');
+const loadLevel = loadLevelFile;
+const saveLevel = saveLevelViaBridgeOrFile;
 
-function loadLevel(): LevelDocument {
-  if (!fs.existsSync(LEVEL_FILE_PATH)) {
-    const dir = path.dirname(LEVEL_FILE_PATH);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const doc = createTacticalCourtyardLevel();
-    fs.writeFileSync(LEVEL_FILE_PATH, JSON.stringify(doc, null, 2), 'utf-8');
-    return doc;
-  }
-  return JSON.parse(fs.readFileSync(LEVEL_FILE_PATH, 'utf-8')) as LevelDocument;
+function isVec3(v: unknown): v is Vec3 {
+  return Array.isArray(v) && v.length >= 3 && v.slice(0, 3).every((n) => typeof n === 'number' && Number.isFinite(n));
 }
 
-async function saveLevel(doc: LevelDocument, message: string): Promise<void> {
-  fs.writeFileSync(LEVEL_FILE_PATH, JSON.stringify(doc, null, 2), 'utf-8');
-  try {
-    await fetch('http://127.0.0.1:4399/api/level', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ doc, message }),
-    });
-  } catch {
-    // bridge server optional
-  }
+/** A tool-level failure: reported inside the tool result so the calling model can read and correct it */
+function toolError(id: number | string | null, message: string): void {
+  sendResponse(id, { content: [{ type: 'text', text: message }], isError: true });
 }
 
 const TOOLS = [
@@ -106,9 +87,17 @@ const rl = readline.createInterface({ input: process.stdin, terminal: false });
 
 rl.on('line', async (line) => {
   if (!line.trim()) return;
+  let req: { id?: number | string | null; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } };
   try {
-    const req = JSON.parse(line);
-    const { id, method, params } = req;
+    req = JSON.parse(line);
+  } catch (err) {
+    sendError(null, -32700, `Parse error: ${(err as Error).message}`);
+    return;
+  }
+  const { method, params } = req;
+  const id = req.id ?? null;
+  const isNotification = req.id === undefined;
+  try {
 
     if (method === 'initialize') {
       sendResponse(id, {
@@ -119,7 +108,13 @@ rl.on('line', async (line) => {
       return;
     }
 
-    if (method === 'notifications/initialized') {
+    if (isNotification) {
+      // Notifications (notifications/initialized, cancelled, ...) never get a response
+      return;
+    }
+
+    if (method === 'ping') {
+      sendResponse(id, {});
       return;
     }
 
@@ -171,7 +166,14 @@ rl.on('line', async (line) => {
       }
 
       if (toolName === 'execute_level_command') {
-        const commands: AICommandAction[] = Array.isArray(args.commands) ? args.commands : [args.commands];
+        const rawCommands = Array.isArray(args.commands) ? args.commands : [args.commands];
+        const commands = rawCommands.filter(
+          (c): c is AICommandAction => Boolean(c) && typeof c === 'object' && typeof (c as { action?: unknown }).action === 'string'
+        );
+        if (commands.length === 0) {
+          toolError(id, 'Provide "commands": an array of objects, each with an "action" field.');
+          return;
+        }
         let nextDoc = doc;
         const messages: string[] = [];
         const affectedIds: string[] = [];
@@ -203,7 +205,11 @@ rl.on('line', async (line) => {
       }
 
       if (toolName === 'check_jump_reachability') {
-        const res = evaluateJumpLink(args.from as Vec3, args.to as Vec3, doc.metricsProfile, doc.blocks);
+        if (!isVec3(args.from) || !isVec3(args.to)) {
+          toolError(id, 'Provide "from" and "to" as [x, y, z] number arrays.');
+          return;
+        }
+        const res = evaluateJumpLink(args.from, args.to, doc.metricsProfile, doc.blocks);
         sendResponse(id, {
           content: [{ type: 'text', text: JSON.stringify(res, null, 2) }],
         });
@@ -211,7 +217,11 @@ rl.on('line', async (line) => {
       }
 
       if (toolName === 'analyze_sightline') {
-        const res = raycastLevel3D(args.from as Vec3, args.to as Vec3, doc.blocks);
+        if (!isVec3(args.from) || !isVec3(args.to)) {
+          toolError(id, 'Provide "from" and "to" as [x, y, z] number arrays.');
+          return;
+        }
+        const res = raycastLevel3D(args.from, args.to, doc.blocks);
         sendResponse(id, {
           content: [{ type: 'text', text: JSON.stringify(res, null, 2) }],
         });
@@ -222,10 +232,11 @@ rl.on('line', async (line) => {
       return;
     }
 
-    if (id !== undefined) {
-      sendResponse(id, {});
-    }
+    sendError(id, -32601, `Method not found: ${method}`);
   } catch (err) {
-    sendError(null, -32700, (err as Error).message);
+    // Answer with the request's own id so the client is never left waiting on a call that failed here
+    if (isNotification) return;
+    if (method === 'tools/call') toolError(id, `Tool failed: ${(err as Error).message}`);
+    else sendError(id, -32603, (err as Error).message);
   }
 });

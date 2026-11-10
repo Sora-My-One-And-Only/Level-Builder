@@ -1,4 +1,5 @@
 import { applyAICommand, auditLevel, computeCrossSection, evaluateJumpLink, raycastLevel3D } from './geometry-analysis';
+import { normalizeLevelDocument } from './document';
 import { createTacticalCourtyardLevel } from './presets';
 import {
   ActiveTool,
@@ -42,6 +43,12 @@ export interface OverlayOptions {
 }
 
 type Listener = () => void;
+
+const DOC_STORAGE_KEY = 'levelforge_doc_v1';
+const PERSIST_INTERVAL_MS = 250;
+const SERVER_PUSH_INTERVAL_MS = 60;
+const RECONNECT_MIN_MS = 3000;
+const RECONNECT_MAX_MS = 60000;
 
 export class LevelStore {
   public doc: LevelDocument;
@@ -93,30 +100,50 @@ export class LevelStore {
   private viewportOnlyListeners = new Set<Listener>();
   private ws: WebSocket | null = null;
   private suppressServerSync = false;
-  private hasLocalEdits = false;
+  /** 本地有尚未送达 Bridge 的修改（离线期间编辑）；重连时以本地为准推送，而不是被服务端旧文档覆盖 */
+  private hasUnsyncedLocalEdits = false;
+  private persistTimer: number | undefined;
+  private serverPushTimer: number | undefined;
+  private reconnectDelayMs = RECONNECT_MIN_MS;
 
   constructor() {
-    const saved = localStorage.getItem('levelforge_doc_v1');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as LevelDocument;
-        if (parsed && Array.isArray(parsed.blocks) && parsed.blocks.length > 0) {
-          this.doc = parsed;
-        } else {
-          this.doc = createTacticalCourtyardLevel();
-        }
-      } catch {
-        this.doc = createTacticalCourtyardLevel();
-      }
-    } else {
-      this.doc = createTacticalCourtyardLevel();
+    let restored: LevelDocument | null = null;
+    try {
+      const saved = localStorage.getItem(DOC_STORAGE_KEY);
+      const parsed = saved ? normalizeLevelDocument(JSON.parse(saved)) : null;
+      if (parsed && parsed.blocks.length > 0) restored = parsed;
+    } catch {
+      // 存档损坏或 localStorage 不可用时退回默认关卡
     }
+    this.doc = restored ?? normalizeLevelDocument(createTacticalCourtyardLevel())!;
 
-    if (!this.doc.sightlines) {
-      this.doc.sightlines = [];
+    if (typeof window !== 'undefined') {
+      // 持久化是节流写入的，页面隐藏 / 关闭前补写一次，避免丢掉最后几百毫秒的修改
+      window.addEventListener('pagehide', () => this.flushPersist());
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') this.flushPersist();
+      });
     }
     this.connectBridge();
     this.exposeGlobalAIAPI();
+  }
+
+  /** 节流写入 localStorage：拖拽 / 试玩时每帧都会通知，不必每次都序列化整份文档 */
+  private schedulePersist(): void {
+    if (this.persistTimer !== undefined) return;
+    this.persistTimer = window.setTimeout(() => this.flushPersist(), PERSIST_INTERVAL_MS);
+  }
+
+  private flushPersist(): void {
+    if (this.persistTimer !== undefined) {
+      window.clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    try {
+      localStorage.setItem(DOC_STORAGE_KEY, JSON.stringify(this.doc));
+    } catch {
+      // ignore storage quota errors
+    }
   }
 
   public onFrameSelected(fn: () => void): () => void {
@@ -185,13 +212,9 @@ export class LevelStore {
   }
 
   public notifyViewportsOnly(syncToServer = true): void {
-    try {
-      localStorage.setItem('levelforge_doc_v1', JSON.stringify(this.doc));
-    } catch {
-      // ignore
-    }
+    this.schedulePersist();
     if (syncToServer && !this.suppressServerSync) {
-      this.pushToServer();
+      this.queueServerPush();
     }
     for (const fn of this.viewportOnlyListeners) {
       fn();
@@ -199,13 +222,9 @@ export class LevelStore {
   }
 
   public notify(syncToServer = false): void {
-    try {
-      localStorage.setItem('levelforge_doc_v1', JSON.stringify(this.doc));
-    } catch {
-      // ignore storage quota errors
-    }
+    this.schedulePersist();
     if (syncToServer && !this.suppressServerSync) {
-      this.pushToServer();
+      this.queueServerPush();
     }
     for (const fn of this.viewportOnlyListeners) {
       fn();
@@ -228,6 +247,7 @@ export class LevelStore {
     if (!prev) return;
     this.future.push(structuredClone(this.doc));
     this.doc = prev;
+    this.lastAILog = `↶ 已撤销（还可撤销 ${this.history.length} 步）`;
     this.notify(true);
   }
 
@@ -236,6 +256,7 @@ export class LevelStore {
     if (!next) return;
     this.history.push(structuredClone(this.doc));
     this.doc = next;
+    this.lastAILog = `↷ 已重做（还可重做 ${this.future.length} 步）`;
     this.notify(true);
   }
 
@@ -243,8 +264,7 @@ export class LevelStore {
     if (recordUndo) {
       this.pushUndoSnapshot();
     }
-    this.hasLocalEdits = true;
-    this.doc = structuredClone(newDoc);
+    this.doc = normalizeLevelDocument(structuredClone(newDoc)) ?? this.doc;
     this.selection = null;
     this.activeRuler = null;
     this.lastAILog = `已切换场景: ${this.doc.metadata.name}`;
@@ -347,13 +367,13 @@ export class LevelStore {
   public deleteSelected(): void {
     if (!this.selection) return;
     const { kind, id } = this.selection;
-    if (kind === 'block') this.dispatchAICommand({ action: 'delete_block', id });
-    if (kind === 'poi') this.dispatchAICommand({ action: 'delete_poi', id });
-    if (kind === 'path') this.dispatchAICommand({ action: 'delete_path', id });
-    if (kind === 'jump') this.dispatchAICommand({ action: 'delete_jump', id });
-    if (kind === 'sightline') this.dispatchAICommand({ action: 'delete_sightline', id });
+    // 先清空选中再派发，派发本身会通知一次，不必再额外通知
     this.selection = null;
-    this.notify(true);
+    if (kind === 'block') this.dispatchAICommand({ action: 'delete_block', id });
+    else if (kind === 'poi') this.dispatchAICommand({ action: 'delete_poi', id });
+    else if (kind === 'path') this.dispatchAICommand({ action: 'delete_path', id });
+    else if (kind === 'jump') this.dispatchAICommand({ action: 'delete_jump', id });
+    else if (kind === 'sightline') this.dispatchAICommand({ action: 'delete_sightline', id });
   }
 
   public duplicateSelectedBlock(): void {
@@ -374,7 +394,15 @@ export class LevelStore {
   public isOnlineStaticHost(): boolean {
     if (typeof window === 'undefined') return false;
     const h = window.location.hostname;
-    return h !== 'localhost' && h !== '127.0.0.1' && !h.startsWith('192.168.');
+    const isLocal =
+      h === 'localhost' ||
+      h === '127.0.0.1' ||
+      h === '[::1]' ||
+      h.endsWith('.localhost') ||
+      h.startsWith('192.168.') ||
+      h.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+    return !isLocal;
   }
 
   private connectBridge(): void {
@@ -387,69 +415,98 @@ export class LevelStore {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${proto}//${window.location.host}/ws`;
 
-    const connect = () => {
+    const scheduleReconnect = () => {
+      // 指数退避：Bridge 没启动时不再每 5 秒刷一条连接失败
+      window.setTimeout(connect, this.reconnectDelayMs);
+      this.reconnectDelayMs = Math.min(RECONNECT_MAX_MS, this.reconnectDelayMs * 2);
+    };
+
+    const adoptServerDoc = (raw: unknown, message?: string): boolean => {
+      const doc = normalizeLevelDocument(raw);
+      if (!doc) return false;
+      // 服务端文档即将覆盖本地，取消还没发出去的本地推送
+      window.clearTimeout(this.serverPushTimer);
+      this.serverPushTimer = undefined;
+      this.hasUnsyncedLocalEdits = false;
+      this.suppressServerSync = true;
       try {
-        const ws = new WebSocket(wsUrl);
-        this.ws = ws;
-
-        ws.onopen = () => {
-          this.bridgeConnected = true;
-          this.notify(false);
-          if (!this.hasLocalEdits) {
-            fetch('/api/level')
-              .then((r) => (r.ok ? r.json() : null))
-              .then((data) => {
-                if (
-                  data &&
-                  data.doc &&
-                  Array.isArray(data.doc.blocks) &&
-                  data.doc.blocks.length > 0 &&
-                  !this.hasLocalEdits
-                ) {
-                  this.suppressServerSync = true;
-                  this.doc = data.doc;
-                  this.notify(false);
-                  this.suppressServerSync = false;
-                }
-              })
-              .catch(() => {});
-          } else {
-            this.pushToServer();
-          }
-        };
-
-        ws.onmessage = (ev) => {
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg.type === 'level_updated' && msg.doc) {
-              this.suppressServerSync = true;
-              this.doc = msg.doc;
-              if (msg.message) {
-                this.lastAILog = `[AI/Server] ${msg.message}`;
-              }
-              this.notify(false);
-              this.suppressServerSync = false;
-            }
-          } catch {
-            // ignore malformed message
-          }
-        };
-
-        ws.onclose = () => {
-          this.bridgeConnected = false;
-          this.notify(false);
-          setTimeout(connect, 5000);
-        };
-
-        ws.onerror = () => {
-          ws.close();
-        };
-      } catch {
-        setTimeout(connect, 5000);
+        this.doc = doc;
+        if (message) this.lastAILog = `[AI/Server] ${message}`;
+        this.notify(false);
+      } finally {
+        this.suppressServerSync = false;
       }
+      return true;
+    };
+
+    const connect = () => {
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch {
+        scheduleReconnect();
+        return;
+      }
+      this.ws = ws;
+
+      ws.onopen = () => {
+        this.bridgeConnected = true;
+        this.reconnectDelayMs = RECONNECT_MIN_MS;
+        this.notify(false);
+        if (this.hasUnsyncedLocalEdits) {
+          this.pushToServer();
+          return;
+        }
+        fetch('/api/level')
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (this.hasUnsyncedLocalEdits) return;
+            if (data && data.doc && Array.isArray(data.doc.blocks) && data.doc.blocks.length > 0) {
+              adoptServerDoc(data.doc);
+            }
+          })
+          .catch(() => {});
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'level_updated' && msg.doc) {
+            adoptServerDoc(msg.doc, msg.message);
+          }
+        } catch {
+          // ignore malformed message
+        }
+      };
+
+      ws.onclose = () => {
+        if (this.ws === ws) this.ws = null;
+        const wasConnected = this.bridgeConnected;
+        this.bridgeConnected = false;
+        if (wasConnected) this.notify(false);
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
     };
 
     connect();
+  }
+
+  /** 把高频的同步请求（拖拽时每次鼠标移动一次）合并成最多每 60ms 推送一次整份文档 */
+  private queueServerPush(): void {
+    if (this.isOnlineStaticHost()) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.hasUnsyncedLocalEdits = true;
+      return;
+    }
+    if (this.serverPushTimer !== undefined) return;
+    this.serverPushTimer = window.setTimeout(() => {
+      this.serverPushTimer = undefined;
+      this.pushToServer();
+    }, SERVER_PUSH_INTERVAL_MS);
   }
 
   private pushToServer(): void {
@@ -461,12 +518,9 @@ export class LevelStore {
           doc: this.doc,
         })
       );
-    } else if (this.bridgeConnected) {
-      fetch('/api/level', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc: this.doc }),
-      }).catch(() => {});
+      this.hasUnsyncedLocalEdits = false;
+    } else {
+      this.hasUnsyncedLocalEdits = true;
     }
   }
 

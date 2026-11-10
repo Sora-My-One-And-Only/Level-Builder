@@ -26,4 +26,13 @@
 npm install
 npm start
 ```
-或者直接双击根目录下的 `启动Level Builder.bat`。
+或者直接双击根目录下的 `启动LevelForge.bat`。
+
+可选环境变量（Bridge / CLI / MCP / Vite 代理共用）：
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `LEVELFORGE_PORT` | `4399` | Bridge 服务端口 |
+| `LEVELFORGE_LEVEL_FILE` | `levels/current.level.json` | 关卡文件路径（可指向别的关卡，或用于测试而不动正式文件） |
+
+Bridge 只接受来自本机 / 局域网页面的请求（按 `Origin` 校验）；CLI、MCP、curl 等不带 `Origin` 的本机工具不受影响。

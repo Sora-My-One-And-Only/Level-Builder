@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import {
+  computeBlocksSignature,
   computeEnemyPathAStar,
   computePlayerCameraRig,
   computeVisibilityPolygon,
@@ -44,6 +45,13 @@ export class Viewport3D {
 
   private isDraggingTransform = false;
   private pointerDownPos = { x: 0, y: 0 };
+
+  // 场景重建调度：store 通知只打脏标记，真正的重建合并到下一帧，并按内容签名跳过没变的部分
+  private sceneDirty = false;
+  private blockMeshKeys = new Map<string, string>();
+  private overlayRenderKey = '';
+  private gridTexCache = new Map<string, THREE.Texture>();
+  private lastPipBadgeKey = '';
 
   // Unity RMB Flythrough Camera state
   public isRMBFlying = false;
@@ -154,7 +162,7 @@ export class Viewport3D {
 
     this.store.subscribeViewports(() => {
       if (!this.isDraggingTransform) {
-        this.rebuildSceneFromStore();
+        this.sceneDirty = true;
       }
     });
 
@@ -1827,9 +1835,21 @@ export class Viewport3D {
     const isTrigger = b.role.startsWith('trigger_') || b.role === 'water' || b.role === 'hazard';
     const baseColor = new THREE.Color(b.color || meta.color);
 
-    const tex = this.gridTexture.clone();
-    tex.needsUpdate = true;
-    tex.repeat.set(Math.max(1, b.size[0] / 2), Math.max(1, b.size[2] / 2));
+    // 同尺寸体块共用一张网格贴图（只是 repeat 不同的克隆），不再每次重建都新建
+    const repX = Math.max(1, b.size[0] / 2);
+    const repZ = Math.max(1, b.size[2] / 2);
+    const texKey = `${repX}|${repZ}`;
+    let tex = this.gridTexCache.get(texKey);
+    if (!tex) {
+      if (this.gridTexCache.size > 256) {
+        for (const old of this.gridTexCache.values()) old.dispose();
+        this.gridTexCache.clear();
+      }
+      tex = this.gridTexture.clone();
+      tex.needsUpdate = true;
+      tex.repeat.set(repX, repZ);
+      this.gridTexCache.set(texKey, tex);
+    }
 
     const mat = new THREE.MeshStandardMaterial({
       color: baseColor,
@@ -1944,15 +1964,91 @@ export class Viewport3D {
     return group;
   }
 
-  public rebuildSceneFromStore(): void {
+  /** 释放一个对象及其所有子对象的几何体与材质（贴图来自共享缓存，不在这里释放） */
+  private disposeObjectTree(root: THREE.Object3D): void {
+    root.traverse((obj) => {
+      const o = obj as THREE.Mesh;
+      if (o.geometry) o.geometry.dispose();
+      const mat = o.material as THREE.Material | THREE.Material[] | undefined;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else if (mat) mat.dispose();
+    });
+  }
+
+  private disposeGroupContents(group: THREE.Group): void {
+    this.disposeObjectTree(group);
+    group.clear();
+  }
+
+  /**
+   * 增量同步体块网格：每个体块按自身内容（含选中 / 剖切 / 语义色）算一个签名，
+   * 签名没变的网格原样保留，只重建真正改动的那几个。拖动一个体块时不再重建整个场景。
+   */
+  private syncBlockMeshes(force: boolean): void {
+    if (force) {
+      this.disposeGroupContents(this.blockGroup);
+      this.meshMap.clear();
+      this.blockMeshKeys.clear();
+    }
+    const floorFilter = this.store.overlays.floorFilter;
+    const sel = this.store.selection;
+    const selectedId = sel?.kind === 'block' ? sel.id : '';
+    const clip = this.store.doc.sectionPlane.clip3D ? '|clip' : '';
+    const liveSlots = new Set<string>();
+
+    for (const b of this.store.doc.blocks) {
+      if (b.hidden || (floorFilter !== 'all' && b.floor !== floorFilter)) continue;
+      // 旧存档里可能有重复 id：重复者用带序号的槽位，保证每个体块都有自己的网格
+      const slot = liveSlots.has(b.id) ? `${b.id}#${liveSlots.size}` : b.id;
+      liveSlots.add(slot);
+      const key = `${JSON.stringify(b)}${b.id === selectedId ? '|sel' : ''}${clip}|${ROLE_META[b.role]?.color ?? ''}`;
+      const existing = this.meshMap.get(slot);
+      if (existing && this.blockMeshKeys.get(slot) === key) continue;
+      if (existing) {
+        this.disposeObjectTree(existing);
+        this.blockGroup.remove(existing);
+      }
+      const obj = this.buildMeshForBlock(b);
+      this.blockGroup.add(obj);
+      this.meshMap.set(slot, obj);
+      this.blockMeshKeys.set(slot, key);
+    }
+
+    for (const [slot, obj] of this.meshMap) {
+      if (liveSlots.has(slot)) continue;
+      this.disposeObjectTree(obj);
+      this.blockGroup.remove(obj);
+      this.meshMap.delete(slot);
+      this.blockMeshKeys.delete(slot);
+    }
+  }
+
+  private computeOverlayRenderKey(): string {
+    const doc = this.store.doc;
+    return JSON.stringify([
+      doc.pois,
+      doc.paths,
+      doc.jumps,
+      doc.sightlines,
+      this.store.activeRuler,
+      this.store.overlays,
+      doc.metricsProfile,
+      this.store.selection,
+      computeBlocksSignature(doc.blocks),
+      doc.blocks.map((b) => [b.id, b.linkedId || '']),
+    ]);
+  }
+
+  /**
+   * 按 store 当前状态同步 3D 场景。体块网格与叠加层（POI / 视野锥 / 路径 / 标尺）各自按内容签名
+   * 判断是否需要重建；`force = true`（外部显式调用，如切换主题）时无条件全部重建。
+   */
+  public rebuildSceneFromStore(force = true): void {
+    this.sceneDirty = false;
     const th = getTheme();
     this.scene.background = new THREE.Color(th.vp3dBg || '#0b111e');
     this.scene.fog = new THREE.FogExp2(th.vp3dBg || '#0b111e', 0.008);
     this.transformControl.detach();
-    this.blockGroup.clear();
-    this.overlayGroup.clear();
-    this.meshMap.clear();
-    this.poiMap.clear();
 
     const { start, end, clip3D, flipNormal } = this.store.doc.sectionPlane;
     const dx = end[0] - start[0];
@@ -1969,19 +2065,20 @@ export class Viewport3D {
     this.sectionPlaneHelper.position.set((start[0] + end[0]) / 2, 2.5, (start[1] + end[1]) / 2);
     this.sectionPlaneHelper.rotation.y = -Math.atan2(dz, dx);
 
-    for (const b of this.store.doc.blocks) {
-      if (b.hidden) continue;
-      if (
-        this.store.overlays.floorFilter !== 'all' &&
-        b.floor !== this.store.overlays.floorFilter
-      ) {
-        continue;
-      }
-      const obj = this.buildMeshForBlock(b);
-      this.blockGroup.add(obj);
-      this.meshMap.set(b.id, obj);
+    this.syncBlockMeshes(force);
+
+    const overlayKey = this.computeOverlayRenderKey();
+    if (force || overlayKey !== this.overlayRenderKey) {
+      this.overlayRenderKey = overlayKey;
+      this.disposeGroupContents(this.overlayGroup);
+      this.poiMap.clear();
+      this.rebuildOverlayObjects();
     }
 
+    this.syncSelectionGizmoAndCapsule();
+  }
+
+  private rebuildOverlayObjects(): void {
     for (const poi of this.store.doc.pois) {
       const poiObj = this.buildPOIObject(poi);
       this.overlayGroup.add(poiObj);
@@ -2002,7 +2099,8 @@ export class Viewport3D {
               eyeHeight: mp.eyeHeight ?? poi.eyeHeight ?? 1.65,
             }
           : poi;
-        const poly = computeVisibilityPolygon(effectivePoi, this.store.doc.blocks, 48);
+        // 与俯视视口使用相同的射线数，两边共享同一份视野多边形缓存
+        const poly = computeVisibilityPolygon(effectivePoi, this.store.doc.blocks, 56);
         if (poly.length >= 3) {
           const positions: number[] = [];
           const origin = poly[0];
@@ -2246,6 +2344,9 @@ export class Viewport3D {
       }
     }
 
+  }
+
+  private syncSelectionGizmoAndCapsule(): void {
     const m = this.store.doc.metricsProfile;
     if (this.store.isPlaytesting && this.store.playtestPose) {
       const dimMode = this.store.getDimensionMode();
@@ -2388,6 +2489,11 @@ export class Viewport3D {
       this.updateEnemyPatrolSimulation(dt);
     }
 
+    // 一帧内无论收到多少次 store 通知，场景最多重建一次
+    if (this.sceneDirty && !this.isDraggingTransform) {
+      this.rebuildSceneFromStore(false);
+    }
+
     const cw = this.container.clientWidth;
     const ch = this.container.clientHeight;
     this.renderer.setViewport(0, 0, cw, ch);
@@ -2420,18 +2526,24 @@ export class Viewport3D {
       this.renderer.setViewport(0, 0, cw, ch);
       this.overlayGroup.visible = prevOverlayVis;
 
-      this.pipBadgeEl.style.display = 'flex';
-      this.pipBadgeEl.style.width = `${pipW}px`;
-      this.pipBadgeEl.style.height = `${pipH}px`;
-      this.pipBadgeEl.style.right = `${pad}px`;
-      this.pipBadgeEl.style.bottom = `${pad}px`;
-      this.pipBadgeEl.innerHTML = `
-        <div class="pip-header">
-          <span>🎥 玩家摄像机 (${rig.mode.toUpperCase()} · FOV ${rig.cameraFov}° · 臂长 ${rig.effectiveDistance}m)</span>
-          ${rig.springArmClipped ? `<span style="color:#f87171;">⚠️防穿墙触发</span>` : ''}
-        </div>
-      `;
-    } else if (this.pipBadgeEl) {
+      // 徽标 DOM 只在内容或尺寸真的变化时才更新，避免每帧重写 innerHTML
+      const badgeKey = `${pipW}|${pipH}|${rig.mode}|${rig.cameraFov}|${rig.effectiveDistance}|${rig.springArmClipped}`;
+      if (badgeKey !== this.lastPipBadgeKey) {
+        this.lastPipBadgeKey = badgeKey;
+        this.pipBadgeEl.style.display = 'flex';
+        this.pipBadgeEl.style.width = `${pipW}px`;
+        this.pipBadgeEl.style.height = `${pipH}px`;
+        this.pipBadgeEl.style.right = `${pad}px`;
+        this.pipBadgeEl.style.bottom = `${pad}px`;
+        this.pipBadgeEl.innerHTML = `
+          <div class="pip-header">
+            <span>🎥 玩家摄像机 (${rig.mode.toUpperCase()} · FOV ${rig.cameraFov}° · 臂长 ${rig.effectiveDistance}m)</span>
+            ${rig.springArmClipped ? `<span style="color:#f87171;">⚠️防穿墙触发</span>` : ''}
+          </div>
+        `;
+      }
+    } else if (this.pipBadgeEl && this.lastPipBadgeKey !== 'hidden') {
+      this.lastPipBadgeKey = 'hidden';
       this.pipBadgeEl.style.display = 'none';
     }
   };

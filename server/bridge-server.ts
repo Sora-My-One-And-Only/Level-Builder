@@ -3,8 +3,6 @@ import cors from 'cors';
 import express from 'express';
 import fs from 'fs';
 import http from 'http';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
   applyAICommand,
@@ -15,50 +13,108 @@ import {
 } from '../src/core/geometry-analysis';
 import { createTacticalCourtyardLevel } from '../src/core/presets';
 import { AICommandAction, LevelDocument, Vec3 } from '../src/core/types';
+import {
+  BRIDGE_PORT,
+  LEVEL_FILE_PATH,
+  loadLevelFile,
+  normalizeLevelDocument,
+  serializeLevel,
+  writeLevelFile,
+} from './level-io';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-export const LEVEL_FILE_PATH = path.resolve(__dirname, '../levels/current.level.json');
+/** Web-editor drags stream a full document per mouse move; coalesce those into one disk write. */
+const CLIENT_UPDATE_WRITE_DELAY_MS = 200;
 
-export function loadOrCreateLevelFile(): LevelDocument {
-  const dir = path.dirname(LEVEL_FILE_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  if (!fs.existsSync(LEVEL_FILE_PATH)) {
-    const initial = createTacticalCourtyardLevel();
-    fs.writeFileSync(LEVEL_FILE_PATH, JSON.stringify(initial, null, 2), 'utf-8');
-    return initial;
-  }
+/**
+ * The Bridge can read and overwrite the level file, so only pages served from this machine or the
+ * local network may talk to it. Requests without an Origin header (CLI, MCP, curl) are not browsers
+ * and are allowed. Without this check any website open in the user's browser could reach
+ * http://127.0.0.1:4399 and rewrite the level.
+ */
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
   try {
-    const raw = fs.readFileSync(LEVEL_FILE_PATH, 'utf-8');
-    return JSON.parse(raw) as LevelDocument;
+    const { hostname } = new URL(origin);
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '[::1]' ||
+      hostname.endsWith('.localhost') ||
+      hostname.startsWith('192.168.') ||
+      hostname.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+    );
   } catch {
-    const fallback = createTacticalCourtyardLevel();
-    fs.writeFileSync(LEVEL_FILE_PATH, JSON.stringify(fallback, null, 2), 'utf-8');
+    return false;
+  }
+}
+
+function loadInitialLevel(): LevelDocument {
+  try {
+    return loadLevelFile();
+  } catch (err) {
+    // Keep the unreadable file (it may only need a small manual fix) and carry on with the default level.
+    const backupPath = `${LEVEL_FILE_PATH}.corrupt-${Date.now()}`;
+    try {
+      fs.copyFileSync(LEVEL_FILE_PATH, backupPath);
+    } catch {
+      // nothing to back up
+    }
+    console.error(`[LevelForge Bridge] ${(err as Error).message}`);
+    console.error(`[LevelForge Bridge] Original kept at ${backupPath}; starting from the default level.`);
+    const fallback = normalizeLevelDocument(createTacticalCourtyardLevel())!;
+    writeLevelFile(fallback);
     return fallback;
   }
 }
 
-let currentDoc: LevelDocument = loadOrCreateLevelFile();
-let lastDiskWriteTime = 0;
+let currentDoc: LevelDocument = loadInitialLevel();
+/** Exact text of our last write: lets the file watcher tell our own writes from external edits. */
+let lastWrittenText = serializeLevel(currentDoc);
+let pendingWriteTimer: NodeJS.Timeout | null = null;
 
-function saveLevelToDisk(doc: LevelDocument): void {
-  lastDiskWriteTime = Date.now();
-  currentDoc = doc;
-  const dir = path.dirname(LEVEL_FILE_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+function flushPendingWrite(): void {
+  if (!pendingWriteTimer) return;
+  clearTimeout(pendingWriteTimer);
+  pendingWriteTimer = null;
+  lastWrittenText = writeLevelFile(currentDoc);
+}
+
+function saveLevelNow(doc: LevelDocument): void {
+  if (pendingWriteTimer) {
+    clearTimeout(pendingWriteTimer);
+    pendingWriteTimer = null;
   }
-  fs.writeFileSync(LEVEL_FILE_PATH, JSON.stringify(doc, null, 2), 'utf-8');
+  currentDoc = doc;
+  lastWrittenText = writeLevelFile(doc);
+}
+
+function saveLevelDeferred(doc: LevelDocument): void {
+  currentDoc = doc;
+  if (pendingWriteTimer) return;
+  pendingWriteTimer = setTimeout(() => {
+    pendingWriteTimer = null;
+    lastWrittenText = writeLevelFile(currentDoc);
+  }, CLIENT_UPDATE_WRITE_DELAY_MS);
 }
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: (origin, cb) => cb(null, isAllowedOrigin(origin)) }));
+app.use((req, res, next) => {
+  if (!isAllowedOrigin(req.headers.origin)) {
+    res.status(403).json({ error: 'Origin not allowed' });
+    return;
+  }
+  next();
+});
 app.use(express.json({ limit: '10mb' }));
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  verifyClient: (info: { origin?: string }) => isAllowedOrigin(info.origin),
+});
 
 function broadcastLevel(message?: string, excludeWs?: WebSocket): void {
   const payload = JSON.stringify({
@@ -77,10 +133,11 @@ wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(String(raw));
-      if (msg.type === 'client_update' && msg.doc) {
-        saveLevelToDisk(msg.doc);
-        broadcastLevel('Web 视口编辑同步', ws);
-      }
+      if (msg.type !== 'client_update') return;
+      const doc = normalizeLevelDocument(msg.doc);
+      if (!doc) return;
+      saveLevelDeferred(doc);
+      broadcastLevel('Web 视口编辑同步', ws);
     } catch {
       // ignore invalid message
     }
@@ -88,19 +145,31 @@ wss.on('connection', (ws) => {
 });
 
 // Watch `levels/current.level.json` so direct edits by Claude Code / Codex or CLI immediately push to browser
-chokidar.watch(LEVEL_FILE_PATH, { ignoreInitial: true }).on('change', () => {
-  if (Date.now() - lastDiskWriteTime < 800) return;
-  try {
-    const raw = fs.readFileSync(LEVEL_FILE_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as LevelDocument;
-    if (parsed && Array.isArray(parsed.blocks)) {
+chokidar
+  .watch(LEVEL_FILE_PATH, { ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: 80, pollInterval: 20 } })
+  .on('all', (event) => {
+    if (event !== 'change' && event !== 'add') return;
+    try {
+      const raw = fs.readFileSync(LEVEL_FILE_PATH, 'utf-8');
+      if (raw === lastWrittenText) return; // our own write
+      const parsed = normalizeLevelDocument(JSON.parse(raw));
+      if (!parsed) return;
+      // An external edit wins over a not-yet-flushed web edit
+      if (pendingWriteTimer) {
+        clearTimeout(pendingWriteTimer);
+        pendingWriteTimer = null;
+      }
       currentDoc = parsed;
+      lastWrittenText = raw;
       broadcastLevel('检测到 levels/current.level.json 外部 AI 修改，已自动热更新');
+    } catch {
+      // ignore partial file write
     }
-  } catch {
-    // ignore partial file write
-  }
-});
+  });
+
+function isVec3(v: unknown): v is Vec3 {
+  return Array.isArray(v) && v.length >= 3 && v.slice(0, 3).every((n) => typeof n === 'number' && Number.isFinite(n));
+}
 
 // REST API for Claude / Codex / Scripts
 app.get('/api/level', (_req, res) => {
@@ -124,25 +193,26 @@ app.get('/api/level', (_req, res) => {
 });
 
 app.put('/api/level', (req, res) => {
-  const { doc, message } = req.body;
-  if (!doc || !Array.isArray(doc.blocks)) {
-    res.status(400).json({ error: 'Invalid LevelDocument payload' });
+  const doc = normalizeLevelDocument(req.body?.doc);
+  if (!doc) {
+    res.status(400).json({ error: 'Invalid LevelDocument payload: expected { doc: { blocks: [...] } }' });
     return;
   }
-  saveLevelToDisk(doc);
-  broadcastLevel(message || 'PUT /api/level 全量更新');
+  saveLevelNow(doc);
+  broadcastLevel(typeof req.body.message === 'string' ? req.body.message : 'PUT /api/level 全量更新');
   res.json({ ok: true, audit: auditLevel(currentDoc) });
 });
 
 app.post('/api/command', (req, res) => {
   const body = req.body;
-  const commands: AICommandAction[] = Array.isArray(body.command)
-    ? body.command
-    : body.command
-    ? [body.command]
-    : Array.isArray(body)
-    ? body
-    : [body];
+  const rawList: unknown = Array.isArray(body) ? body : Array.isArray(body?.command) ? body.command : body?.command ?? body;
+  const commands = (Array.isArray(rawList) ? rawList : [rawList]).filter(
+    (c): c is AICommandAction => Boolean(c) && typeof c === 'object' && typeof (c as { action?: unknown }).action === 'string'
+  );
+  if (commands.length === 0) {
+    res.status(400).json({ error: 'Provide a command object (or array) with an "action" field' });
+    return;
+  }
 
   const messages: string[] = [];
   const affectedIds: string[] = [];
@@ -155,7 +225,7 @@ app.post('/api/command', (req, res) => {
     affectedIds.push(...out.affectedIds);
   }
 
-  saveLevelToDisk(nextDoc);
+  saveLevelNow(nextDoc);
   broadcastLevel(messages.join(' | '));
 
   res.json({
@@ -167,27 +237,48 @@ app.post('/api/command', (req, res) => {
 });
 
 app.post('/api/analyze-los', (req, res) => {
-  const { from, to } = req.body as { from: Vec3; to: Vec3 };
-  if (!Array.isArray(from) || !Array.isArray(to)) {
+  const { from, to } = (req.body || {}) as { from?: unknown; to?: unknown };
+  if (!isVec3(from) || !isVec3(to)) {
     res.status(400).json({ error: 'Provide from: [x,y,z] and to: [x,y,z]' });
     return;
   }
-  const result = raycastLevel3D(from, to, currentDoc.blocks);
-  res.json(result);
+  res.json(raycastLevel3D(from, to, currentDoc.blocks));
 });
 
 app.post('/api/check-jump', (req, res) => {
-  const { from, to } = req.body as { from: Vec3; to: Vec3 };
-  if (!Array.isArray(from) || !Array.isArray(to)) {
+  const { from, to } = (req.body || {}) as { from?: unknown; to?: unknown };
+  if (!isVec3(from) || !isVec3(to)) {
     res.status(400).json({ error: 'Provide from: [x,y,z] and to: [x,y,z]' });
     return;
   }
-  const result = evaluateJumpLink(from, to, currentDoc.metricsProfile, currentDoc.blocks);
-  res.json(result);
+  res.json(evaluateJumpLink(from, to, currentDoc.metricsProfile, currentDoc.blocks));
 });
 
-const PORT = Number(process.env.LEVELFORGE_PORT || 4399);
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[LevelForge Bridge] Listening on http://127.0.0.1:${PORT}`);
+// Malformed JSON bodies and any unexpected handler error come back as JSON, not an HTML stack trace
+app.use((err: Error & { status?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  res.status(err.status && err.status >= 400 ? err.status : 500).json({ error: err.message });
+});
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(
+      `[LevelForge Bridge] Port ${BRIDGE_PORT} is already in use — another Bridge is probably running. ` +
+        `Stop it, or set LEVELFORGE_PORT to a different port.`
+    );
+  } else {
+    console.error('[LevelForge Bridge]', err);
+  }
+  process.exit(1);
+});
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    flushPendingWrite();
+    process.exit(0);
+  });
+}
+
+server.listen(BRIDGE_PORT, '127.0.0.1', () => {
+  console.log(`[LevelForge Bridge] Listening on http://127.0.0.1:${BRIDGE_PORT}`);
   console.log(`[LevelForge Bridge] Watching file: ${LEVEL_FILE_PATH}`);
 });
