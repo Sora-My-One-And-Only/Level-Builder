@@ -2218,3 +2218,305 @@ input[type='range']:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* ==========================================================================
+   Motion Pass 2 — 少装饰、多反馈
+   面板现在是就地修补 DOM，状态变化发生在同一个元素上，所以"激活 / 选中 / 开关"
+   用普通的颜色过渡就能表达；悬停上浮、弹性回弹这类装饰性动效收掉。
+   ========================================================================== */
+
+/* ---- 悬停不再上浮，只变色；按下给一个很轻的下压 ---- */
+.btn:hover:not(:disabled),
+.chip-toggle:hover:not(:disabled),
+.viewcube-mini-btn:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.btn,
+.select-pill,
+.chip-toggle,
+.dim-mode-btn,
+.viewcube-mini-btn,
+.tool-btn,
+.role-chip,
+.room-cat-pill,
+.design-tag-chip,
+.outliner-item,
+.tab-btn {
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    transform 80ms ease;
+}
+
+.btn:active:not(:disabled),
+.chip-toggle:active:not(:disabled),
+.dim-mode-btn:active,
+.viewcube-mini-btn:active,
+.tab-btn:active,
+.tool-btn:active,
+.role-chip:active {
+  transform: scale(0.97);
+}
+
+.select-pill:hover {
+  box-shadow: none;
+}
+
+.num-scrub-handle:active {
+  transform: none;
+}
+
+input[type='range']:hover::-webkit-slider-thumb {
+  transform: none;
+}
+
+/* ---- 选中反馈：大纲条目被选中时闪一下，把视线带过去 ---- */
+@keyframes ui-select-flash {
+  from {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.outliner-item.selected {
+  animation: ui-select-flash 480ms var(--ease-out);
+}
+
+.outliner-list {
+  scroll-behavior: smooth;
+}
+
+/* ---- 当前工具：左侧加一道强调色条，比整块变色更容易一眼找到 ---- */
+.tool-btn.active {
+  box-shadow: inset 3px 0 0 var(--accent-contrast);
+}
+
+/* ---- 提示条 (toast) ---- */
+.toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  z-index: 200;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 7px 8px 7px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-light);
+  border-left: 3px solid var(--accent);
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  color: var(--text-main);
+  font-size: 12px;
+  animation: ui-slide-up var(--dur-med) var(--ease-out) both;
+}
+
+.toast-success {
+  border-left-color: var(--success);
+}
+
+.toast-warning {
+  border-left-color: var(--warning);
+}
+
+.toast-error {
+  border-left-color: var(--danger);
+}
+
+.toast-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.toast-success .toast-icon {
+  background: var(--success);
+  color: #fff;
+}
+
+.toast-warning .toast-icon {
+  background: var(--warning);
+  color: #1a1206;
+}
+
+.toast-error .toast-icon {
+  background: var(--danger);
+  color: #fff;
+}
+
+.toast-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.toast-action {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 5px;
+  padding: 2px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.toast-action:hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.toast-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.toast-close:hover {
+  color: var(--text-main);
+  background: var(--bg-3);
+}
+
+/* ---- 状态栏按钮 + 快捷键一览 ---- */
+.statusbar-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-muted);
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 10px;
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
+}
+
+.statusbar-btn:hover {
+  color: var(--text-main);
+  border-color: var(--accent);
+}
+
+#status-left {
+  margin-right: auto;
+}
+
+.shortcut-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+}
+
+.shortcut-backdrop.open {
+  display: flex;
+  animation: ui-fade-in var(--dur-med) ease both;
+}
+
+.shortcut-panel {
+  width: min(720px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  padding: 14px 16px 16px;
+  animation: ui-pop-in var(--dur-slow) var(--ease-out) both;
+}
+
+.shortcut-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px 24px;
+}
+
+.shortcut-group h4 {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.shortcut-row:last-child {
+  border-bottom: none;
+}
+
+.shortcut-row kbd {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  background: var(--bg-0);
+  border: 1px solid var(--border-light);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  color: var(--text-main);
+}
+
+.shortcut-row span {
+  color: var(--text-muted);
+  text-align: right;
+}

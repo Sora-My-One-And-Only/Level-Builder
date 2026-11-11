@@ -67,7 +67,7 @@ export function animateCollapse(container: HTMLElement, bodySelector: string, co
 }
 
 /** 给一个容器的直接子元素做错落淡入（用于 Tab 切换后的新内容）。 */
-export function staggerIn(container: HTMLElement, childSelector = ':scope > *', maxItems = 12): void {
+export function staggerIn(container: HTMLElement, childSelector = ':scope > *', maxItems = 6): void {
   if (prefersReducedMotion()) return;
   const items = Array.from(container.querySelectorAll<HTMLElement>(childSelector)).slice(0, maxItems);
   items.forEach((el, i) => {
@@ -76,7 +76,8 @@ export function staggerIn(container: HTMLElement, childSelector = ':scope > *', 
         { opacity: 0, transform: 'translateY(6px)' },
         { opacity: 1, transform: 'translateY(0)' },
       ],
-      { duration: 260, delay: i * 28, easing: EASE_OUT, fill: 'backwards' }
+      // 页签切换是高频操作：整体控制在 ~250ms 内完成，不让人等动画
+      { duration: 180, delay: i * 14, easing: EASE_OUT, fill: 'backwards' }
     );
   });
 }
@@ -119,7 +120,8 @@ export function runEveryFrameFor(ms: number, cb: () => void): void {
 /** 安装全局按钮点击涟漪效果（事件委托，一次安装即可覆盖动态渲染的按钮）。 */
 export function installRippleEffect(): void {
   const SELECTOR =
-    '.btn, .tab-btn, .dim-mode-btn, .chip-toggle, .theme-preset-card, .dock-section-header, .card-title, .overlay-bar button';
+    // 只给"主操作"保留涟漪；折叠标题、图层开关这类高频小控件靠颜色过渡反馈就够了
+    '.btn-primary, .btn-playtest, .btn-sim-patrol, .theme-preset-card';
   document.addEventListener(
     'pointerdown',
     (e) => {

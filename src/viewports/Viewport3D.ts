@@ -49,6 +49,9 @@ export class Viewport3D {
   // 场景重建调度：store 通知只打脏标记，真正的重建合并到下一帧，并按内容签名跳过没变的部分
   private sceneDirty = false;
   private blockMeshKeys = new Map<string, string>();
+  /** 刚创建的体块做一次短促的"弹出"入场，提示新对象出现在哪里 */
+  private blockPopIns = new Map<THREE.Object3D, number>();
+  private hasSyncedBlocksOnce = false;
   private overlayRenderKey = '';
   private gridTexCache = new Map<string, THREE.Texture>();
   private lastPipBadgeKey = '';
@@ -1995,6 +1998,7 @@ export class Viewport3D {
     const selectedId = sel?.kind === 'block' ? sel.id : '';
     const clip = this.store.doc.sectionPlane.clip3D ? '|clip' : '';
     const liveSlots = new Set<string>();
+    const createdNow: THREE.Object3D[] = [];
 
     for (const b of this.store.doc.blocks) {
       if (b.hidden || (floorFilter !== 'all' && b.floor !== floorFilter)) continue;
@@ -2007,8 +2011,10 @@ export class Viewport3D {
       if (existing) {
         this.disposeObjectTree(existing);
         this.blockGroup.remove(existing);
+        this.blockPopIns.delete(existing);
       }
       const obj = this.buildMeshForBlock(b);
+      if (!existing) createdNow.push(obj);
       this.blockGroup.add(obj);
       this.meshMap.set(slot, obj);
       this.blockMeshKeys.set(slot, key);
@@ -2018,8 +2024,36 @@ export class Viewport3D {
       if (liveSlots.has(slot)) continue;
       this.disposeObjectTree(obj);
       this.blockGroup.remove(obj);
+      this.blockPopIns.delete(obj);
       this.meshMap.delete(slot);
       this.blockMeshKeys.delete(slot);
+    }
+
+    // 只给"少量新增"做入场动画：首次加载、切换场景、整体重建时一次出现很多体块，不做
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (this.hasSyncedBlocksOnce && !force && !reduceMotion && createdNow.length > 0 && createdNow.length <= 6) {
+      const now = performance.now();
+      for (const obj of createdNow) {
+        obj.scale.setScalar(0.82);
+        this.blockPopIns.set(obj, now);
+      }
+    }
+    this.hasSyncedBlocksOnce = true;
+  }
+
+  private updateBlockPopIns(now: number): void {
+    if (this.blockPopIns.size === 0) return;
+    const DURATION = 220;
+    for (const [obj, start] of this.blockPopIns) {
+      const t = Math.min(1, (now - start) / DURATION);
+      // easeOutBack：略微过冲再回落
+      const c1 = 1.70158;
+      const eased = 1 + (c1 + 1) * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+      obj.scale.setScalar(0.82 + 0.18 * eased);
+      if (t >= 1) {
+        obj.scale.setScalar(1);
+        this.blockPopIns.delete(obj);
+      }
     }
   }
 
@@ -2493,6 +2527,7 @@ export class Viewport3D {
     if (this.sceneDirty && !this.isDraggingTransform) {
       this.rebuildSceneFromStore(false);
     }
+    this.updateBlockPopIns(now);
 
     const cw = this.container.clientWidth;
     const ch = this.container.clientHeight;

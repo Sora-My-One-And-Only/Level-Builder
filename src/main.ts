@@ -67,7 +67,9 @@ import {
   staggerIn,
   withThemeTransition,
 } from './ui/motion';
+import { patchTarget } from './ui/morph';
 import { finiteInRange, loadPanelState, PANEL_DEFAULTS, savePanelState } from './ui/panelState';
+import { showToast } from './ui/toast';
 
 const store = new LevelStore();
 applyThemeToDOM();
@@ -199,12 +201,18 @@ app.innerHTML = `
     <footer class="statusbar">
       <div id="status-left">Ready</div>
       <div id="status-right"></div>
+      <button class="statusbar-btn" id="btn-shortcuts" type="button" title="快捷键一览 (?)">⌨ 快捷键</button>
     </footer>
     <input id="file-import-input" type="file" accept=".json" style="display:none" />
 
     <!-- Floating Theme & Custom Color Studio Modal -->
     <div class="theme-studio-backdrop" id="theme-studio-backdrop">
       <div class="theme-studio-panel" id="theme-studio-panel"></div>
+    </div>
+
+    <!-- Keyboard Shortcut Cheat Sheet (press ?) -->
+    <div class="shortcut-backdrop" id="shortcut-backdrop">
+      <div class="shortcut-panel" id="shortcut-panel" role="dialog" aria-label="快捷键一览"></div>
     </div>
   </div>
 `;
@@ -303,7 +311,7 @@ installRippleEffect();
  * 1. Left/Right drag-to-scrub (both on the ↔ handle, on the input itself when not typing, and on its row label)
  * 2. Custom sleek theme-aware ▴ / ▾ stepper buttons (replacing ugly browser spin boxes)
  */
-function enhanceNumberInputs(root: HTMLElement): void {
+function buildNumberInputStructure(root: HTMLElement): void {
   const numInputs = Array.from(root.querySelectorAll<HTMLInputElement>('input[type="number"]'));
   for (const inp of numInputs) {
     if (inp.parentElement?.classList.contains('num-scrub-wrap')) continue;
@@ -326,136 +334,171 @@ function enhanceNumberInputs(root: HTMLElement): void {
       }
     }
     wrap.appendChild(handle);
-
     wrap.appendChild(inp);
 
     const stepBox = document.createElement('div');
     stepBox.className = 'num-step-btns';
-    stepBox.innerHTML = `
-      <button type="button" class="num-step-btn" data-dir="1" tabindex="-1" title="增加">▴</button>
-      <button type="button" class="num-step-btn" data-dir="-1" tabindex="-1" title="减少">▾</button>
-    `;
+    stepBox.innerHTML =
+      '<button type="button" class="num-step-btn" data-dir="1" tabindex="-1" title="增加">▴</button>' +
+      '<button type="button" class="num-step-btn" data-dir="-1" tabindex="-1" title="减少">▾</button>';
     wrap.appendChild(stepBox);
 
-    const getStep = () => {
-      const s = parseFloat(inp.step);
-      return !isNaN(s) && s > 0 ? s : 1;
-    };
-
-    const clampAndFormat = (val: number, stepVal: number): string => {
-      const min = inp.min !== '' ? parseFloat(inp.min) : -Infinity;
-      const max = inp.max !== '' ? parseFloat(inp.max) : Infinity;
-      const clamped = Math.max(min, Math.min(max, val));
-      const decimals = (stepVal.toString().split('.')[1] || '').length;
-      return Number(clamped.toFixed(Math.max(2, decimals))).toString();
-    };
-
-    const applyDelta = (dirOrMult: number, fineMode = false, fastMode = false) => {
-      const baseStep = getStep();
-      const mult = fineMode ? 0.1 : fastMode ? 5 : 1;
-      const cur = parseFloat(inp.value) || 0;
-      const next = cur + dirOrMult * baseStep * mult;
-      inp.value = clampAndFormat(next, baseStep * mult);
-      inp.dispatchEvent(new Event('input', { bubbles: true }));
-      inp.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-
-    stepBox.querySelectorAll<HTMLButtonElement>('.num-step-btn').forEach((btn) => {
-      btn.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const dir = Number(btn.dataset.dir) || 1;
-        store.pushUndoSnapshot();
-        applyDelta(dir, e.shiftKey, e.altKey || e.ctrlKey);
-      });
-    });
-
-    const startScrub = (e: MouseEvent, allowClickFocus: boolean) => {
-      if (e.button !== 0) return;
-      if (allowClickFocus && document.activeElement === inp) return;
-
-      const startX = e.clientX;
-      const startVal = parseFloat(inp.value) || 0;
-      const baseStep = getStep();
-      let moved = false;
-
-      const onMove = (ev: MouseEvent) => {
-        const dx = ev.clientX - startX;
-        if (!moved && Math.abs(dx) > 3) {
-          moved = true;
-          isScrubbingNumber = true;
-          store.pushUndoSnapshot();
-          wrap.classList.add('scrubbing');
-          document.body.style.cursor = 'ew-resize';
-          inp.blur();
-        }
-        if (moved) {
-          ev.preventDefault();
-          const mult = ev.shiftKey ? 0.1 : ev.altKey || ev.ctrlKey ? 5 : 1;
-          const steps = Math.round(dx / 4);
-          const next = startVal + steps * baseStep * mult;
-          const formatted = clampAndFormat(next, baseStep * mult);
-          if (inp.value !== formatted) {
-            inp.value = formatted;
-            inp.dispatchEvent(new Event('input', { bubbles: true }));
-            inp.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-        }
-      };
-
-      const onUp = () => {
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('mouseup', onUp);
-        if (moved) {
-          wrap.classList.remove('scrubbing');
-          document.body.style.cursor = '';
-          isScrubbingNumber = false;
-          renderLeftDock();
-          renderSidebar();
-        } else if (allowClickFocus) {
-          inp.focus();
-          inp.select();
-        }
-      };
-
-      if (!allowClickFocus) {
-        e.preventDefault();
-      }
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-    };
-
-    handle.addEventListener('mousedown', (e) => startScrub(e, false));
-    inp.addEventListener('mousedown', (e) => startScrub(e, true));
-
-    // Also allow dragging the row's <label> if not yet bound
-    const row = inp.closest('.form-row');
-    const lbl = row?.querySelector('label');
+    // The row's <label> doubles as a scrub handle
+    const lbl = inp.closest('.form-row')?.querySelector('label');
     if (lbl && !lbl.classList.contains('scrub-label')) {
       lbl.classList.add('scrub-label');
       lbl.title = '按住左右拖拽可调节数值';
-      lbl.addEventListener('mousedown', (e) => startScrub(e as MouseEvent, false));
     }
   }
+}
+
+function numberInputStep(inp: HTMLInputElement): number {
+  const s = parseFloat(inp.step);
+  return !isNaN(s) && s > 0 ? s : 1;
+}
+
+function clampAndFormatNumber(inp: HTMLInputElement, val: number, stepVal: number): string {
+  const min = inp.min !== '' ? parseFloat(inp.min) : -Infinity;
+  const max = inp.max !== '' ? parseFloat(inp.max) : Infinity;
+  const clamped = Math.max(min, Math.min(max, val));
+  const decimals = (stepVal.toString().split('.')[1] || '').length;
+  return Number(clamped.toFixed(Math.max(2, decimals))).toString();
+}
+
+function commitNumberInput(inp: HTMLInputElement, value: string): void {
+  if (inp.value === value) return;
+  inp.value = value;
+  inp.dispatchEvent(new Event('input', { bubbles: true }));
+  inp.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function startNumberScrub(inp: HTMLInputElement, e: MouseEvent, allowClickFocus: boolean): void {
+  if (e.button !== 0) return;
+  if (allowClickFocus && document.activeElement === inp) return;
+  const wrap = inp.closest('.num-scrub-wrap');
+
+  const startX = e.clientX;
+  const startVal = parseFloat(inp.value) || 0;
+  const baseStep = numberInputStep(inp);
+  let moved = false;
+
+  const onMove = (ev: MouseEvent) => {
+    const dx = ev.clientX - startX;
+    if (!moved && Math.abs(dx) > 3) {
+      moved = true;
+      isScrubbingNumber = true;
+      store.pushUndoSnapshot();
+      wrap?.classList.add('scrubbing');
+      document.body.style.cursor = 'ew-resize';
+      inp.blur();
+    }
+    if (moved) {
+      ev.preventDefault();
+      const mult = ev.shiftKey ? 0.1 : ev.altKey || ev.ctrlKey ? 5 : 1;
+      const steps = Math.round(dx / 4);
+      commitNumberInput(inp, clampAndFormatNumber(inp, startVal + steps * baseStep * mult, baseStep * mult));
+    }
+  };
+
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    if (moved) {
+      wrap?.classList.remove('scrubbing');
+      document.body.style.cursor = '';
+      isScrubbingNumber = false;
+      renderLeftDock();
+      renderSidebar();
+    } else if (allowClickFocus) {
+      inp.focus();
+      inp.select();
+    }
+  };
+
+  if (!allowClickFocus) e.preventDefault();
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+}
+
+/**
+ * One delegated listener per panel drives every number input in it (steppers, ↔ / XYZ handle,
+ * drag on the field itself, drag on the row label). Nothing is bound per input, so inputs that
+ * are patched, moved or replaced by a re-render keep working without re-wiring.
+ */
+const scrubDelegatedRoots = new WeakSet<HTMLElement>();
+function bindNumberInputs(root: HTMLElement): void {
+  if (scrubDelegatedRoots.has(root)) return;
+  scrubDelegatedRoots.add(root);
+  root.addEventListener('mousedown', (e) => {
+    const target = e.target as HTMLElement;
+
+    const stepBtn = target.closest<HTMLElement>('.num-step-btn');
+    if (stepBtn) {
+      const inp = stepBtn.closest('.num-scrub-wrap')?.querySelector<HTMLInputElement>('input[type="number"]');
+      if (!inp) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const baseStep = numberInputStep(inp);
+      const mult = e.shiftKey ? 0.1 : e.altKey || e.ctrlKey ? 5 : 1;
+      const dir = Number(stepBtn.dataset.dir) || 1;
+      store.pushUndoSnapshot();
+      commitNumberInput(inp, clampAndFormatNumber(inp, (parseFloat(inp.value) || 0) + dir * baseStep * mult, baseStep * mult));
+      return;
+    }
+
+    const handle = target.closest('.num-scrub-handle');
+    if (handle) {
+      const inp = handle.closest('.num-scrub-wrap')?.querySelector<HTMLInputElement>('input[type="number"]');
+      if (inp) startNumberScrub(inp, e, false);
+      return;
+    }
+
+    if (target instanceof HTMLInputElement && target.type === 'number' && target.closest('.num-scrub-wrap')) {
+      startNumberScrub(target, e, true);
+      return;
+    }
+
+    const label = target.closest('label.scrub-label');
+    if (label) {
+      const inp = label.closest('.form-row')?.querySelector<HTMLInputElement>('input[type="number"]');
+      if (inp) startNumberScrub(inp, e, false);
+    }
+  });
 }
 
 /**
  * Paints the filled part of every themed <input type="range"> track (CSS reads --fill)
  */
+const rangeDelegatedRoots = new WeakSet<HTMLElement>();
+function paintRangeFill(rng: HTMLInputElement): void {
+  const min = parseFloat(rng.min) || 0;
+  const max = rng.max !== '' ? parseFloat(rng.max) : 100;
+  const pct = max > min ? ((parseFloat(rng.value) - min) / (max - min)) * 100 : 0;
+  rng.style.setProperty('--fill', `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`);
+}
+
 function enhanceRangeInputs(root: HTMLElement): void {
-  root.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((rng) => {
-    const paint = () => {
-      const min = parseFloat(rng.min) || 0;
-      const max = rng.max !== '' ? parseFloat(rng.max) : 100;
-      const pct = max > min ? ((parseFloat(rng.value) - min) / (max - min)) * 100 : 0;
-      rng.style.setProperty('--fill', `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`);
-    };
-    paint();
-    if (rng.dataset.fillBound) return;
-    rng.dataset.fillBound = '1';
-    rng.addEventListener('input', paint);
-    rng.addEventListener('change', paint);
+  root.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach(paintRangeFill);
+  if (rangeDelegatedRoots.has(root)) return;
+  rangeDelegatedRoots.add(root);
+  root.addEventListener('input', (e) => {
+    const target = e.target;
+    if (target instanceof HTMLInputElement && target.type === 'range') paintRangeFill(target);
   });
+}
+
+function prepareDockMarkup(root: HTMLElement): void {
+  buildNumberInputStructure(root);
+  // 窄栏下按钮文字可能被截断，补上完整文案的悬停提示
+  root.querySelectorAll<HTMLElement>('.tool-btn, .role-chip').forEach((btn) => {
+    if (!btn.title) btn.title = (btn.textContent || '').trim();
+  });
+}
+
+/** Structural enhancement applied to freshly rendered sidebar markup before it is patched into the page */
+function prepareSidebarMarkup(root: HTMLElement): void {
+  enhanceCollapsibleCards(root);
+  buildNumberInputStructure(root);
 }
 
 /**
@@ -470,7 +513,8 @@ function enhanceCollapsibleCards(container: HTMLElement): void {
     const rawText = (titleEl.querySelector('span')?.textContent || titleEl.textContent || `card_${idx}`)
       .replace(/\(\d+.*?\)/g, '')
       .trim();
-    const cardKey = `${activeSidebarTab}:${rawText}`;
+    // The key is derived from the pristine title text; on later (binding) passes reuse it
+    const cardKey = card.dataset.cardKey || `${activeSidebarTab}:${rawText}`;
     card.dataset.cardKey = cardKey;
 
     // Wrap all siblings after .card-title into .card-body if not already wrapped
@@ -562,7 +606,7 @@ function renderTopBarNow(): void {
   const lang = getLang();
   const dim = store.getDimensionMode();
 
-  topbar.innerHTML = `
+  patchTarget(topbar).html = `
     <div class="brand-group">
       <button id="btn-toggle-left-dock" class="btn btn-icon" title="折叠/展开左侧工具栏">
         ${isLeftDockCollapsed ? '▶ 工具' : '◀'}
@@ -836,7 +880,7 @@ document.fonts?.ready.then(() => fitTopBar(true));
 
 function renderSidebarTabs(): void {
   const tabsEl = document.getElementById('sidebar-tabs')!;
-  tabsEl.innerHTML = `
+  patchTarget(tabsEl).html = `
     <button class="tab-btn ${activeSidebarTab === 'inspector' ? 'active' : ''}" data-tab="inspector">${t('tabInspector')}</button>
     <button class="tab-btn ${activeSidebarTab === 'metrics' ? 'active' : ''}" data-tab="metrics">${t('tabMetrics')}</button>
     <button class="tab-btn ${activeSidebarTab === 'audit' ? 'active' : ''}" data-tab="audit">${t('tabAudit')}</button>
@@ -865,7 +909,7 @@ function renderLeftDockNow(): void {
   const tf = store.transformMode;
   const cd = store.creationDefaults;
 
-  dock.innerHTML = `
+  patchTarget(dock, prepareDockMarkup).html = `
     <div class="dock-section ${collapsedDockSections.has('sec1') ? 'collapsed' : ''}" data-dock-sec="sec1">
       <div class="dock-section-header">
         <span>${t('sec1Title')}</span>
@@ -1215,19 +1259,14 @@ function renderLeftDockNow(): void {
     };
   }
 
-  // 窄栏下按钮文字可能被截断，补上完整文案的悬停提示
-  dock.querySelectorAll<HTMLElement>('.tool-btn, .role-chip').forEach((btn) => {
-    if (!btn.title) btn.title = (btn.textContent || '').trim();
-  });
-
-  enhanceNumberInputs(dock);
+  bindNumberInputs(dock);
 }
 
 function renderOverlayBar(): void {
   const bar = document.getElementById('overlay-bar')!;
   const ov = store.overlays;
 
-  bar.innerHTML = `
+  patchTarget(bar).html = `
     <div class="overlay-group">
       <span style="color:var(--text-muted);font-weight:600;font-size:10px;">${t('ovLabel')}</span>
       <button class="chip-toggle ${ov.showGrid ? 'on' : ''}" data-ov="showGrid">${t('ovGrid')}</button>
@@ -1331,7 +1370,7 @@ function renderFloatingNoteCard(): void {
   const subMeta = blk ? `(${blk.size.join('×')}m · ${blk.floor}F)` : `(${poi!.position.map((v) => v.toFixed(1)).join(', ')})`;
   const linkedTarget = obj.linkedId ? allTargets.find((tItem) => tItem.id === obj.linkedId) : null;
 
-  card.innerHTML = `
+  patchTarget(card).html = `
     <div class="fnc-header">
       <div class="fnc-title">
         <span class="fnc-role-badge" style="background:${badgeColor};">${badgeText}</span>
@@ -1480,7 +1519,7 @@ function renderSidebarNow(): void {
     renderAITab(container);
   }
   enhanceCollapsibleCards(container);
-  enhanceNumberInputs(container);
+  bindNumberInputs(container);
   enhanceRangeInputs(container);
 
   const btnExpandAll = document.getElementById('btn-expand-all-cards');
@@ -1871,7 +1910,7 @@ function renderInspectorTab(container: HTMLElement): void {
 
   const sightlines = store.doc.sightlines || [];
 
-  container.innerHTML = `
+  patchTarget(container, prepareSidebarMarkup).html = `
     ${selectionCardHTML}
 
     <div class="panel-card">
@@ -2259,7 +2298,7 @@ function renderMetricsTab(container: HTMLElement): void {
     </div>
   `;
 
-  container.innerHTML = `
+  patchTarget(container, prepareSidebarMarkup).html = `
     <div class="panel-card">
       <div class="card-title"><span>${t('metricsPresetTitle')}</span></div>
       <select id="metrics-preset-select">
@@ -2486,7 +2525,7 @@ function renderAuditTab(container: HTMLElement): void {
   const annotatedBlocks = store.doc.blocks.filter((b) => b.designTag || b.notes || b.mechanicsTip || b.linkedId);
   const annotatedPOIs = store.doc.pois.filter((p) => p.designTag || p.notes || p.mechanicsTip || p.linkedId);
 
-  container.innerHTML = `
+  patchTarget(container, prepareSidebarMarkup).html = `
     <div class="panel-card">
       <div class="card-title"><span>${t('auditStatsTitle')}</span></div>
       <div class="stat-grid">
@@ -2661,7 +2700,7 @@ function renderAITab(container: HTMLElement): void {
       ? ROOM_TEMPLATES
       : ROOM_TEMPLATES.filter((r) => r.categoryId === activeRoomCategoryFilter);
 
-  container.innerHTML = `
+  patchTarget(container, prepareSidebarMarkup).html = `
     <!-- Categorized Game Room Template Generator -->
     <div class="panel-card" style="border-color:rgba(56,189,248,0.5);">
       <div class="card-title">
@@ -2788,7 +2827,7 @@ claude mcp add levelforge -- npx tsx server/mcp-server.ts</div>
       const parsed = JSON.parse(ta.value) as AICommandAction | AICommandAction[];
       (window as unknown as { LevelForgeAI: { execute: (c: unknown) => void } }).LevelForgeAI.execute(parsed);
     } catch (e) {
-      alert(`JSON Error: ${(e as Error).message}`);
+      showToast(`JSON 格式错误：${(e as Error).message}`, { kind: 'error' });
     }
   };
 
@@ -2905,7 +2944,7 @@ function renderThemeStudio(): void {
   const lang = getLang();
 
   const presetCount = Object.keys(THEME_PRESETS).length;
-  panel.innerHTML = `
+  patchTarget(panel).html = `
     <div class="card-title" style="font-size:13px;cursor:default;">
       <span>🎨 界面主题模板与自定义颜色工作台</span>
       <button class="btn" id="btn-close-theme-studio">✕ 关闭</button>
@@ -3068,9 +3107,14 @@ fileInput.onchange = () => {
       const parsed = JSON.parse(String(reader.result));
       if (parsed && Array.isArray(parsed.blocks)) {
         store.setDocument(parsed, true, true);
+      } else {
+        showToast('导入失败：这不是有效的关卡文件（缺少 blocks 数组）', { kind: 'error' });
       }
     } catch (err) {
-      alert(`JSON parse error: ${(err as Error).message}`);
+      showToast(`导入失败，JSON 无法解析：${(err as Error).message}`, { kind: 'error' });
+    } finally {
+      // 允许再次选择同一个文件
+      fileInput.value = '';
     }
   };
   reader.readAsText(file);
@@ -3164,7 +3208,151 @@ function flushUIRender(): void {
   renderFloatingNoteCard();
   renderSidebarTabs();
   updateStatusBar();
+  toastForLatestLog();
+  revealSelectionInOutliner();
 }
+
+/**
+ * 把值得打断注意力的操作结果用提示条报出来：破坏性操作附带"撤销"，外部 AI / CLI 的修改和
+ * 指令失败也在这里提示。普通编辑（移动、改属性）不弹，避免刷屏。
+ */
+const DELETED_KIND_LABEL: Record<string, string> = {
+  block: '体块',
+  POI: '标记点',
+  FlowPath: '动线',
+  JumpLink: '跳跃标尺',
+  'Sightline Ruler': '视线标尺',
+};
+let lastToastedLog = store.lastAILog;
+
+function toastForLatestLog(): void {
+  const log = store.lastAILog;
+  if (log === lastToastedLog) return;
+  lastToastedLog = log;
+  const undo = { actionLabel: '撤销', onAction: () => store.undo() };
+
+  const deleted = log.match(/^Deleted (block|POI|FlowPath|JumpLink|Sightline Ruler) (.+)$/);
+  if (deleted) {
+    // 体块 / 标记点的消息形如：Deleted block "名称" (id)，提示里只显示名称
+    const named = deleted[2].match(/^"(.*)" \(.+\)$/);
+    showToast(`已删除${DELETED_KIND_LABEL[deleted[1]]}${named ? `「${named[1]}」` : ` ${deleted[2]}`}`, undo);
+  } else if (log.startsWith('Cleared all')) {
+    showToast('已清空场景中的全部对象', { kind: 'warning', ...undo });
+  } else if (log.startsWith('已切换场景')) {
+    showToast(log, undo);
+  } else if (log.startsWith('[AI/Server]')) {
+    // 其他标签页 / 自己的视口同步不提示，只提示 AI、CLI、MCP 或手改文件带来的更新
+    if (!log.includes('Web 视口编辑同步')) showToast(log.replace('[AI/Server] ', '🤖 '), { duration: 4500 });
+  } else if (/^(Unknown action|Invalid command|Command ".+" failed)/.test(log) || / not found$/.test(log)) {
+    showToast(log, { kind: 'error' });
+  }
+}
+
+/** 在视口里选中对象后，让大纲列表滚动到对应条目（条目高亮的过渡由 CSS 完成） */
+let lastRevealedSelection = '';
+function revealSelectionInOutliner(): void {
+  const sel = store.selection;
+  const key = sel ? `${sel.kind}:${sel.id}` : '';
+  if (key === lastRevealedSelection) return;
+  lastRevealedSelection = key;
+  if (!sel) return;
+  const list = document.getElementById('outliner-list');
+  const item = list?.querySelector<HTMLElement>('.outliner-item.selected');
+  if (!list || !item) return;
+  const top = item.offsetTop - list.offsetTop;
+  if (top < list.scrollTop || top + item.offsetHeight > list.scrollTop + list.clientHeight) {
+    list.scrollTo({ top: Math.max(0, top - list.clientHeight / 2 + item.offsetHeight / 2), behavior: 'smooth' });
+  }
+}
+
+// ---- 快捷键一览 ----
+const SHORTCUT_GROUPS: { title: string; items: [string, string][] }[] = [
+  {
+    title: '工具与变换',
+    items: [
+      ['Q / V', '选择 / 拖拽编辑'],
+      ['W', '平移'],
+      ['E', '旋转'],
+      ['R', '缩放'],
+      ['B', '绘制矩形体块'],
+      ['F', '镜头聚焦选中对象'],
+    ],
+  },
+  {
+    title: '编辑',
+    items: [
+      ['Ctrl + Z', '撤销'],
+      ['Ctrl + Y', '重做'],
+      ['Ctrl + D', '复制选中体块'],
+      ['Delete / Backspace', '删除选中对象'],
+    ],
+  },
+  {
+    title: '3D 视口',
+    items: [
+      ['Alt + 左键拖拽', '环绕'],
+      ['中键拖拽', '平移'],
+      ['滚轮', '缩放'],
+      ['右键 + W A S D / Q E', '漫游飞行'],
+      ['Tab', '进入 / 退出实机试玩'],
+    ],
+  },
+  {
+    title: '面板与数值',
+    items: [
+      ['拖拽数值框 / 标签', '连续调节数值'],
+      ['拖拽时按 Shift / Alt', '微调 ×0.1 / 快调 ×5'],
+      ['双击分隔条', '恢复默认面板尺寸'],
+      ['?', '打开 / 关闭本面板'],
+      ['Esc', '关闭弹窗'],
+    ],
+  },
+];
+
+function setShortcutPanelOpen(open: boolean): void {
+  const backdrop = document.getElementById('shortcut-backdrop')!;
+  if (open === backdrop.classList.contains('open')) return;
+  if (!open) {
+    animateOut(backdrop, [{ opacity: 1 }, { opacity: 0 }], 150, () => backdrop.classList.remove('open'));
+    return;
+  }
+  const panel = document.getElementById('shortcut-panel')!;
+  panel.innerHTML = `
+    <div class="shortcut-header">
+      <span>⌨ 快捷键一览</span>
+      <button class="btn" id="btn-close-shortcuts" type="button">✕ 关闭</button>
+    </div>
+    <div class="shortcut-grid">
+      ${SHORTCUT_GROUPS.map(
+        (g) => `
+        <section class="shortcut-group">
+          <h4>${g.title}</h4>
+          ${g.items.map(([keys, desc]) => `<div class="shortcut-row"><kbd>${keys}</kbd><span>${desc}</span></div>`).join('')}
+        </section>`
+      ).join('')}
+    </div>
+  `;
+  document.getElementById('btn-close-shortcuts')!.onclick = () => setShortcutPanelOpen(false);
+  backdrop.classList.add('open');
+}
+
+document.getElementById('btn-shortcuts')!.onclick = () => setShortcutPanelOpen(true);
+document.getElementById('shortcut-backdrop')!.onclick = (e) => {
+  if (e.target === e.currentTarget) setShortcutPanelOpen(false);
+};
+window.addEventListener('keydown', (e) => {
+  const shortcutOpen = document.getElementById('shortcut-backdrop')!.classList.contains('open');
+  if (e.key === 'Escape' && shortcutOpen) {
+    setShortcutPanelOpen(false);
+    return;
+  }
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.key === '?' && !store.isPlaytesting) {
+    e.preventDefault();
+    setShortcutPanelOpen(!shortcutOpen);
+  }
+});
 
 store.subscribe(() => {
   if (uiRenderQueued) return;

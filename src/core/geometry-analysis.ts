@@ -1735,10 +1735,11 @@ function applyAICommandUnchecked(doc: LevelDocument, cmd: AICommandAction): AICo
 
     case 'delete_block': {
       const before = next.blocks.length;
+      const removedName = next.blocks.find((b) => b.id === cmd.id)?.name;
       next.blocks = next.blocks.filter((b) => b.id !== cmd.id);
       return {
         doc: next,
-        message: next.blocks.length < before ? `Deleted block ${cmd.id}` : `Block ${cmd.id} not found`,
+        message: next.blocks.length < before ? `Deleted block "${removedName}" (${cmd.id})` : `Block ${cmd.id} not found`,
         affectedIds: [cmd.id],
       };
     }
@@ -1788,8 +1789,13 @@ function applyAICommandUnchecked(doc: LevelDocument, cmd: AICommandAction): AICo
     }
 
     case 'delete_poi': {
+      const removedPoiName = next.pois.find((p) => p.id === cmd.id)?.name;
       next.pois = next.pois.filter((p) => p.id !== cmd.id);
-      return { doc: next, message: `Deleted POI ${cmd.id}`, affectedIds: [cmd.id] };
+      return {
+        doc: next,
+        message: removedPoiName !== undefined ? `Deleted POI "${removedPoiName}" (${cmd.id})` : `POI ${cmd.id} not found`,
+        affectedIds: [cmd.id],
+      };
     }
 
     case 'add_path': {
