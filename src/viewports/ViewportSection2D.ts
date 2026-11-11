@@ -14,10 +14,10 @@ import { BlockType, CrossSectionSliceItem, LevelPOI, Vec2, Vec3 } from '../core/
 
 type SectionDrag =
   | { type: 'pan'; startMouse: Vec2; startPan: Vec2 }
-  | { type: 'move_uv'; id: string; startU: number; startV: number; origPos: Vec3 }
-  | { type: 'resize_top'; id: string; startV: number; origY: number; origH: number }
-  | { type: 'resize_width'; id: string; side: 'left' | 'right'; startU: number; origPos: Vec3; origW: number }
-  | { type: 'move_poi_uv'; id: string; startU: number; startV: number; origPos: Vec3 }
+  | { type: 'move_uv'; id: string; startU: number; startV: number; origPos: Vec3; moved?: boolean }
+  | { type: 'resize_top'; id: string; startV: number; origY: number; origH: number; moved?: boolean }
+  | { type: 'resize_width'; id: string; side: 'left' | 'right'; startU: number; origPos: Vec3; origW: number; moved?: boolean }
+  | { type: 'move_poi_uv'; id: string; startU: number; startV: number; origPos: Vec3; moved?: boolean }
   | { type: 'draw_block_uv'; blockType: BlockType; startUV: Vec2; curUV: Vec2 }
   | { type: 'draw_jump_uv'; startUV: Vec2; curUV: Vec2 }
   | { type: 'ruler_uv'; startUV: Vec2; curUV: Vec2 };
@@ -237,14 +237,18 @@ export class ViewportSection2D {
 
       if (tool === 'place_poi') {
         const pt = uvToWorld3D(this.store.snapValue(uv[0]), this.store.snapValue(uv[1]));
+        const cat = this.store.creationDefaults.poiCategory || 'spawn_enemy';
+        const meta = POI_META[cat] || POI_META.spawn_enemy;
         this.store.dispatchAICommand({
           action: 'add_poi',
           poi: {
-            name: `2D标记点_${this.store.doc.pois.length + 1}`,
-            category: 'spawn_enemy',
+            name: `${meta.label.split(' ')[0]}_${this.store.doc.pois.length + 1}`,
+            category: cat,
             position: pt,
             yaw: 90,
-            showVision: this.store.getDimensionMode() !== '2d_side',
+            showVision:
+              this.store.getDimensionMode() !== '2d_side' &&
+              (cat === 'sniper_nest' || cat === 'spawn_enemy' || cat === 'boss'),
             fov: 90,
             visionRange: 16,
             eyeHeight: this.store.doc.metricsProfile.eyeHeight,
@@ -290,13 +294,13 @@ export class ViewportSection2D {
 
       if (hitPoi) {
         this.store.setSelection({ kind: 'poi', id: hitPoi.id });
-        this.store.pushUndoSnapshot();
         this.drag = {
           type: 'move_poi_uv',
           id: hitPoi.id,
           startU: uv[0],
           startV: uv[1],
           origPos: [...hitPoi.position],
+          moved: false,
         };
         return;
       }
@@ -328,7 +332,6 @@ export class ViewportSection2D {
         const blk = hitItem.block;
         this.store.setSelection({ kind: 'block', id: blk.id });
         if (!blk.locked) {
-          this.store.pushUndoSnapshot();
           const topY = blk.position[1] + blk.size[1] / 2;
           const centerU = (blk.position[0] - start[0]) * tx + (blk.position[2] - start[1]) * tz;
           const leftU = centerU - blk.size[0] / 2;
@@ -342,6 +345,7 @@ export class ViewportSection2D {
               startV: uv[1],
               origY: blk.position[1],
               origH: blk.size[1],
+              moved: false,
             };
           } else if (Math.abs(uv[0] - rightU) * this.zoom <= 9) {
             this.drag = {
@@ -351,6 +355,7 @@ export class ViewportSection2D {
               startU: uv[0],
               origPos: [...blk.position],
               origW: blk.size[0],
+              moved: false,
             };
           } else if (Math.abs(uv[0] - leftU) * this.zoom <= 9) {
             this.drag = {
@@ -360,6 +365,7 @@ export class ViewportSection2D {
               startU: uv[0],
               origPos: [...blk.position],
               origW: blk.size[0],
+              moved: false,
             };
           } else {
             this.drag = {
@@ -368,6 +374,7 @@ export class ViewportSection2D {
               startU: uv[0],
               startV: uv[1],
               origPos: [...blk.position],
+              moved: false,
             };
           }
         }
@@ -429,6 +436,11 @@ export class ViewportSection2D {
         const dragId = this.drag.id;
         const du = this.store.snapValue(uv[0] - this.drag.startU);
         const dv = Math.round((uv[1] - this.drag.startV) / 0.25) * 0.25;
+        if (Math.abs(du) < 1e-4 && Math.abs(dv) < 1e-4 && !this.drag.moved) return;
+        if (!this.drag.moved) {
+          this.store.pushUndoSnapshot();
+          this.drag.moved = true;
+        }
         this.store.updatePOILive(
           dragId,
           {
@@ -447,8 +459,13 @@ export class ViewportSection2D {
         const dragId = this.drag.id;
         const du = this.store.snapValue(uv[0] - this.drag.startU);
         const dv = Math.round((uv[1] - this.drag.startV) / 0.25) * 0.25;
+        if (Math.abs(du) < 1e-4 && Math.abs(dv) < 1e-4 && !this.drag.moved) return;
         const blk = this.store.doc.blocks.find((b) => b.id === dragId);
         if (blk) {
+          if (!this.drag.moved) {
+            this.store.pushUndoSnapshot();
+            this.drag.moved = true;
+          }
           this.store.updateBlockLive(
             blk.id,
             {
@@ -467,8 +484,13 @@ export class ViewportSection2D {
       if (this.drag.type === 'resize_width') {
         const dragId = this.drag.id;
         const du = this.store.snapValue(uv[0] - this.drag.startU);
+        if (Math.abs(du) < 1e-4 && !this.drag.moved) return;
         const blk = this.store.doc.blocks.find((b) => b.id === dragId);
         if (blk) {
+          if (!this.drag.moved) {
+            this.store.pushUndoSnapshot();
+            this.drag.moved = true;
+          }
           const sign = this.drag.side === 'right' ? 1 : -1;
           const newW = Math.max(0.5, Number((this.drag.origW + du * sign).toFixed(2)));
           const deltaW = newW - this.drag.origW;
@@ -492,8 +514,13 @@ export class ViewportSection2D {
       if (this.drag.type === 'resize_top') {
         const dragId = this.drag.id;
         const dy = Math.round((uv[1] - this.drag.startV) / 0.1) * 0.1;
+        if (Math.abs(dy) < 1e-4 && !this.drag.moved) return;
         const blk = this.store.doc.blocks.find((b) => b.id === dragId);
         if (blk) {
+          if (!this.drag.moved) {
+            this.store.pushUndoSnapshot();
+            this.drag.moved = true;
+          }
           const bottomY = this.drag.origY - this.drag.origH / 2;
           const newH = Math.max(0.2, Number((this.drag.origH + dy).toFixed(2)));
           const newY = Number((bottomY + newH / 2).toFixed(2));
@@ -554,11 +581,31 @@ export class ViewportSection2D {
           this.store.dispatchAICommand({
             action: 'add_jump',
             jump: {
-              name: `2D跳跃校验_${this.store.doc.jumps.length + 1}`,
+              name: `跳跃标尺_${this.store.doc.jumps.length + 1}`,
               from: uvToWorld3D(d.startUV[0], d.startUV[1]),
               to: uvToWorld3D(d.curUV[0], d.curUV[1]),
             },
           });
+        }
+        return;
+      }
+
+      if (d.type === 'ruler_uv') {
+        const dist = Math.hypot(d.curUV[0] - d.startUV[0], d.curUV[1] - d.startUV[1]);
+        this.store.activeRuler = null;
+        if (dist >= 0.5) {
+          this.store.dispatchAICommand({
+            action: 'add_sightline',
+            sightline: {
+              name: `视线尺_${(this.store.doc.sightlines?.length || 0) + 1}`,
+              fromPos: uvToWorld3D(d.startUV[0], d.startUV[1]),
+              toPos: uvToWorld3D(d.curUV[0], d.curUV[1]),
+              fromHeightOffset: 0,
+              toHeightOffset: 0,
+            },
+          });
+        } else {
+          this.store.notifyViewportsOnly(false);
         }
         return;
       }
@@ -569,7 +616,9 @@ export class ViewportSection2D {
         d.type === 'resize_width' ||
         d.type === 'move_poi_uv'
       ) {
-        this.store.notify(true);
+        if (d.moved) {
+          this.store.notify(true);
+        }
       }
     });
   }
@@ -667,10 +716,16 @@ export class ViewportSection2D {
 
     // Labels for A and A'
     ctx.fillStyle = '#fb7185';
-    ctx.font = 'bold 11px Inter, sans-serif';
-    ctx.fillText('切面起点 A (0m)', ax + 6, 22);
-    ctx.fillText(`切面终点 A' (${sectionLen.toFixed(1)}m)`, Math.max(ax + 110, apx - 125), 22);
+    ctx.font = 'bold 10.5px Inter, sans-serif';
+    ctx.fillText('A (0m)', ax + 6, 20);
+    ctx.fillText(`A' (${sectionLen.toFixed(1)}m)`, Math.max(ax + 70, apx - 85), 20);
     ctx.restore();
+  }
+
+  private elevationToHeatColor(topY: number): string {
+    const t = Math.max(0, Math.min(1, (topY + 1) / 8));
+    const hue = Math.round(210 - t * 185);
+    return `hsl(${hue}, 70%, 42%)`;
   }
 
   private drawSlabProjection(
@@ -680,6 +735,10 @@ export class ViewportSection2D {
   ): void {
     const meta = ROLE_META[item.block.role] || ROLE_META.walkable;
     const isSel = this.store.selection?.kind === 'block' && this.store.selection.id === item.block.id;
+    const topY = Number((item.block.position[1] + item.block.size[1] / 2).toFixed(2));
+    const baseCol = this.store.overlays.elevationHeatmap
+      ? this.elevationToHeatColor(topY)
+      : item.block.color || meta.color;
 
     ctx.save();
     for (const [u0, y0, u1, y1] of item.slabProjections) {
@@ -688,23 +747,23 @@ export class ViewportSection2D {
       const w = sx1 - sx0;
       const h = sy1 - sy0;
 
-      ctx.fillStyle = item.block.color || meta.color;
+      ctx.fillStyle = baseCol;
       ctx.globalAlpha = 0.12;
       ctx.fillRect(sx0, sy0, w, h);
 
       ctx.globalAlpha = isSel ? 0.9 : 0.35;
-      ctx.strokeStyle = isSel ? '#38bdf8' : item.block.color || meta.color;
+      ctx.strokeStyle = isSel ? '#38bdf8' : baseCol;
       ctx.lineWidth = isSel ? 2 : 1;
       ctx.setLineDash([4, 4]);
       ctx.strokeRect(sx0, sy0, w, h);
       ctx.setLineDash([]);
 
-      if (w > 45 && h > 16) {
-        ctx.globalAlpha = 0.55;
+      if (this.store.overlays.showDimensions && (isSel || (w > 64 && h > 20))) {
+        ctx.globalAlpha = isSel ? 0.9 : 0.55;
         ctx.fillStyle = '#cbd5e1';
         ctx.font = '9px Inter, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(`[远景] ${item.block.name}`, sx0 + w / 2, sy0 + h / 2 + 3);
+        ctx.fillText(item.block.name, sx0 + w / 2, sy0 + h / 2 + 3);
       }
     }
     ctx.restore();
@@ -716,7 +775,10 @@ export class ViewportSection2D {
     sectionLen: number
   ): void {
     const meta = ROLE_META[item.block.role] || ROLE_META.walkable;
-    const col = item.block.color || meta.color;
+    const topY = Number((item.block.position[1] + item.block.size[1] / 2).toFixed(2));
+    const col = this.store.overlays.elevationHeatmap
+      ? this.elevationToHeatColor(topY)
+      : item.block.color || meta.color;
     const isSel = this.store.selection?.kind === 'block' && this.store.selection.id === item.block.id;
     const hatch = this.getHatchPattern(col);
 
@@ -746,34 +808,38 @@ export class ViewportSection2D {
     }
 
     // Draw top elevation & slope callout on cut geometry
-    if (maxSx - minSx > 32) {
+    const spanPx = maxSx - minSx;
+    if (this.store.overlays.showDimensions && (isSel || spanPx > 46)) {
       const cx = (minSx + maxSx) / 2;
-      const topY = Number((item.block.position[1] + item.block.size[1] / 2).toFixed(2));
       ctx.fillStyle = isSel ? '#38bdf8' : '#e2e8f0';
-      ctx.font = '600 10px Inter, sans-serif';
+      ctx.font = '600 9.5px Inter, sans-serif';
       ctx.textAlign = 'center';
       const label = item.slopeAngle !== undefined
         ? `${item.block.name} (${item.slopeAngle}°)`
-        : `${item.block.name} (${topY >= 0 ? '+' : ''}${topY}m)`;
+        : isSel || spanPx > 72
+        ? `${item.block.name} (${topY >= 0 ? '+' : ''}${topY}m)`
+        : item.block.name;
       ctx.fillText(label, cx, minSy - 5);
 
       if (item.warning) {
         ctx.fillStyle = '#fca5a5';
-        ctx.font = 'bold 10px Inter, sans-serif';
-        ctx.fillText(`⚠ ${item.warning}`, cx, minSy - 18);
+        ctx.font = 'bold 9.5px Inter, sans-serif';
+        ctx.fillText(`⚠ ${item.warning}`, cx, minSy - 17);
       }
 
-      if (item.block.role === 'one_way_platform') {
+      if (item.block.role === 'one_way_platform' && (isSel || spanPx > 60)) {
         ctx.fillStyle = '#5eead4';
-        ctx.font = 'bold 9px Inter, sans-serif';
-        ctx.fillText('▲ 单向可穿透跳台', cx, minSy + 11);
+        ctx.font = 'bold 8.5px Inter, sans-serif';
+        ctx.fillText('▲ 单向跳台', cx, minSy + 11);
       }
 
-      if (this.store.overlays.showDesignNotes && (item.block.notes || item.block.designTag)) {
-        const badgeTxt = item.block.designTag ? `📝 ${item.block.designTag.split(' ')[0]}` : '📝 备注';
+      if (this.store.overlays.showDesignNotes && (item.block.notes || item.block.designTag) && (isSel || spanPx > 56)) {
+        const badgeTxt = isSel || this.zoom >= 26
+          ? (item.block.designTag ? `📝 ${item.block.designTag.split(' ')[0]}` : '📝 备注')
+          : '📝';
         ctx.fillStyle = '#fef08a';
         ctx.font = '600 9px Inter, sans-serif';
-        ctx.fillText(badgeTxt, cx, minSy - (item.warning ? 29 : 16));
+        ctx.fillText(badgeTxt, cx, minSy - (item.warning ? 28 : 16));
       }
     }
 
@@ -930,7 +996,9 @@ export class ViewportSection2D {
 
           ctx.fillStyle = '#38bdf8';
           ctx.fillRect(camSx - 4, camSy - 3, 8, 6);
-          ctx.fillText(`🎥 Pitch ${rig.pitchDeg}° / FOV ${rig.cameraFov}°`, camSx, camSy - 7);
+          if ((this.store.selection?.kind === 'poi' && this.store.selection.id === poi.id) || this.zoom >= 26) {
+            ctx.fillText(`🎥 ${rig.pitchDeg}° / ${rig.cameraFov}°`, camSx, camSy - 7);
+          }
         }
         ctx.restore();
       }
@@ -1208,7 +1276,7 @@ export class ViewportSection2D {
 
     ctx.fillStyle = '#38bdf8';
     ctx.font = '9px JetBrains Mono, monospace';
-    ctx.fillText(`人形 ${m.playerHeight}m | 跃高 ${m.jumpHeight}m / 极限跨距 ${dynSpan.toFixed(1)}m`, sx + radPx + 6, headSy + 8);
+    ctx.fillText(`${m.playerHeight}m · 跃${m.jumpHeight}m×${dynSpan.toFixed(1)}m`, sx + radPx + 6, headSy + 8);
     ctx.restore();
   }
 
@@ -1221,11 +1289,11 @@ export class ViewportSection2D {
   ): void {
     ctx.save();
     ctx.fillStyle = 'rgba(15, 23, 42, 0.82)';
-    ctx.fillRect(10, ch - 30, Math.min(cw - 20, 420), 22);
+    ctx.fillRect(10, ch - 30, Math.min(cw - 20, 255), 22);
     ctx.fillStyle = '#cbd5e1';
     ctx.font = '10px JetBrains Mono, monospace';
     ctx.fillText(
-      `断面 A-A' 总长 ${sectionLen.toFixed(1)}m | 剖切体块 ${sliceCount} 个 | 拖拽体块可调标高/高度 | 标高 Y=${this.mouseUV[1].toFixed(2)}m`,
+      `A-A' ${sectionLen.toFixed(1)}m · 剖切 ${sliceCount} · Y=${this.mouseUV[1].toFixed(1)}m`,
       16,
       ch - 15
     );

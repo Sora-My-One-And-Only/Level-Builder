@@ -9,6 +9,7 @@ import {
   LevelBlock,
   LevelDocument,
   LevelPOI,
+  POICategory,
   Vec2,
   Vec3,
   ViewportLayout,
@@ -28,6 +29,8 @@ export interface EditorCreationDefaults {
   baseY: number;
   height: number;
   customColor?: string;
+  poiCategory: POICategory;
+  pathType: 'main' | 'flank' | 'secret' | 'patrol';
 }
 
 export interface OverlayOptions {
@@ -69,6 +72,8 @@ export class LevelStore {
     floor: 0,
     baseY: 0,
     height: 3.0,
+    poiCategory: 'spawn_enemy',
+    pathType: 'main',
   };
 
   public overlays: OverlayOptions = {
@@ -111,7 +116,7 @@ export class LevelStore {
     try {
       const saved = localStorage.getItem(DOC_STORAGE_KEY);
       const parsed = saved ? normalizeLevelDocument(JSON.parse(saved)) : null;
-      if (parsed && parsed.blocks.length > 0) restored = parsed;
+      if (parsed) restored = parsed;
     } catch {
       // 存档损坏或 localStorage 不可用时退回默认关卡
     }
@@ -424,6 +429,7 @@ export class LevelStore {
     const adoptServerDoc = (raw: unknown, message?: string): boolean => {
       const doc = normalizeLevelDocument(raw);
       if (!doc) return false;
+      const prevDim = this.getDimensionMode();
       // 服务端文档即将覆盖本地，取消还没发出去的本地推送
       window.clearTimeout(this.serverPushTimer);
       this.serverPushTimer = undefined;
@@ -431,6 +437,20 @@ export class LevelStore {
       this.suppressServerSync = true;
       try {
         this.doc = doc;
+        if (this.selection) {
+          const { kind, id } = this.selection;
+          const stillExists =
+            (kind === 'block' && doc.blocks.some((b) => b.id === id)) ||
+            (kind === 'poi' && doc.pois.some((p) => p.id === id)) ||
+            (kind === 'path' && doc.paths.some((p) => p.id === id)) ||
+            (kind === 'jump' && doc.jumps.some((j) => j.id === id)) ||
+            (kind === 'sightline' && (doc.sightlines || []).some((s) => s.id === id));
+          if (!stillExists) this.selection = null;
+        }
+        const nextDim = this.getDimensionMode();
+        if (nextDim !== prevDim) {
+          for (const fn of this.dimensionChangeListeners) fn(nextDim);
+        }
         if (message) this.lastAILog = `[AI/Server] ${message}`;
         this.notify(false);
       } finally {
@@ -461,8 +481,13 @@ export class LevelStore {
           .then((r) => (r.ok ? r.json() : null))
           .then((data) => {
             if (this.hasUnsyncedLocalEdits) return;
-            if (data && data.doc && Array.isArray(data.doc.blocks) && data.doc.blocks.length > 0) {
-              adoptServerDoc(data.doc);
+            if (data && data.doc && Array.isArray(data.doc.blocks)) {
+              if (data.doc.blocks.length === 0 && this.doc.blocks.length > 0) {
+                // 服务端是空画布而浏览器已有本地关卡时，将本地关卡同步至服务端以保持一致
+                this.pushToServer();
+              } else {
+                adoptServerDoc(data.doc);
+              }
             }
           })
           .catch(() => {});

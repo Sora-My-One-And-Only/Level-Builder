@@ -838,7 +838,8 @@ export class Viewport3D {
   private hitTest3DObjectAndPoint(
     clientX: number,
     clientY: number,
-    snap = true
+    snap = true,
+    forSightline = false
   ): { pt: Vec3; objectId?: string; heightOffset: number } | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(
@@ -856,7 +857,11 @@ export class Viewport3D {
         const poi = this.store.doc.pois.find((p) => p.id === cur!.userData.poiId);
         if (poi) {
           return {
-            pt: [poi.position[0], Number((poi.position[1] + poi.eyeHeight).toFixed(2)), poi.position[2]],
+            pt: [
+              poi.position[0],
+              Number((poi.position[1] + (forSightline ? poi.eyeHeight : 0)).toFixed(2)),
+              poi.position[2],
+            ],
             objectId: poi.id,
             heightOffset: poi.eyeHeight,
           };
@@ -870,7 +875,7 @@ export class Viewport3D {
       let cur: THREE.Object3D | null = blkHits[0].object;
       while (cur && !cur.userData?.blockId) cur = cur.parent;
       const p = blkHits[0].point;
-      if (cur?.userData?.blockId) {
+      if (forSightline && cur?.userData?.blockId) {
         const blk = this.store.doc.blocks.find((b) => b.id === cur!.userData.blockId);
         if (blk && !ROLE_META[blk.role]?.walkable) {
           return {
@@ -940,7 +945,7 @@ export class Viewport3D {
         this.store.pushUndoSnapshot();
       } else {
         this.store.notify(true);
-        this.rebuildSceneFromStore();
+        this.rebuildSceneFromStore(false);
       }
     });
 
@@ -953,6 +958,10 @@ export class Viewport3D {
       if (sel.kind === 'block') {
         const blk = this.store.doc.blocks.find((b) => b.id === sel.id);
         if (!blk) return;
+        const sizeChanged =
+          Math.abs(obj.scale.x - 1) > 1e-4 ||
+          Math.abs(obj.scale.y - 1) > 1e-4 ||
+          Math.abs(obj.scale.z - 1) > 1e-4;
         const newPos: Vec3 = [
           Number(obj.position.x.toFixed(2)),
           Number(obj.position.y.toFixed(2)),
@@ -978,6 +987,12 @@ export class Viewport3D {
           },
           false
         );
+        if (sizeChanged) {
+          this.syncBlockMeshes(false);
+          const rebuilt = this.meshMap.get(blk.id);
+          if (rebuilt) this.transformControl.attach(rebuilt);
+        }
+        this.sceneDirty = true;
       } else if (sel.kind === 'poi') {
         const poi = this.store.doc.pois.find((p) => p.id === sel.id);
         if (!poi) return;
@@ -993,6 +1008,7 @@ export class Viewport3D {
           },
           false
         );
+        this.sceneDirty = true;
       }
     });
 
@@ -1056,7 +1072,7 @@ export class Viewport3D {
       }
 
       if (this.store.activeTool === 'measure_ruler') {
-        const hit = this.hitTest3DObjectAndPoint(e.clientX, e.clientY, false);
+        const hit = this.hitTest3DObjectAndPoint(e.clientX, e.clientY, false, true);
         if (hit) {
           this.orbit.enabled = false;
           const startEye: Vec3 = hit.objectId
@@ -1076,16 +1092,18 @@ export class Viewport3D {
       }
 
       if (this.store.activeTool === 'place_poi') {
-        const hit = this.hitTest3DObjectAndPoint(e.clientX, e.clientY, true);
+        const hit = this.hitTest3DObjectAndPoint(e.clientX, e.clientY, true, false);
         if (hit) {
+          const cat = this.store.creationDefaults.poiCategory || 'spawn_enemy';
+          const meta = POI_META[cat] || POI_META.spawn_enemy;
           this.store.dispatchAICommand({
             action: 'add_poi',
             poi: {
-              name: `敌人巡逻点_${this.store.doc.pois.length + 1}`,
-              category: 'spawn_enemy',
+              name: `${meta.label.split(' ')[0]}_${this.store.doc.pois.length + 1}`,
+              category: cat,
               position: hit.pt,
               yaw: 0,
-              showVision: true,
+              showVision: cat === 'sniper_nest' || cat === 'spawn_enemy' || cat === 'boss',
               fov: 85,
               visionRange: 20,
               eyeHeight: this.store.doc.metricsProfile.eyeHeight,
@@ -1111,7 +1129,12 @@ export class Viewport3D {
       }
 
       if (this.draw3DState) {
-        const hit = this.hitTest3DObjectAndPoint(e.clientX, e.clientY, this.draw3DState.mode !== 'ruler');
+        const hit = this.hitTest3DObjectAndPoint(
+          e.clientX,
+          e.clientY,
+          this.draw3DState.mode !== 'ruler',
+          this.draw3DState.mode === 'ruler'
+        );
         if (hit) {
           const endPt: Vec3 =
             this.draw3DState.mode === 'ruler' && !hit.objectId
@@ -1120,6 +1143,9 @@ export class Viewport3D {
           this.draw3DState.curPt = endPt;
           if (this.draw3DState.mode === 'block') {
             this.updatePreviewMesh(this.draw3DState.startPt, endPt);
+          } else if (this.draw3DState.mode === 'jump') {
+            this.sceneDirty = true;
+            this.store.notifyViewportsOnly(false);
           } else if (this.draw3DState.mode === 'ruler') {
             this.store.activeRuler = { start: this.draw3DState.startPt, end: endPt };
             this.store.notifyViewportsOnly(false);
@@ -1193,7 +1219,7 @@ export class Viewport3D {
             },
           });
         } else if (st.mode === 'jump') {
-          const hitEnd = this.hitTest3DObjectAndPoint(e.clientX, e.clientY, true);
+          const hitEnd = this.hitTest3DObjectAndPoint(e.clientX, e.clientY, true, false);
           const dist = Math.hypot(st.curPt[0] - st.startPt[0], st.curPt[2] - st.startPt[2]);
           if (dist >= 0.5) {
             this.store.dispatchAICommand({
@@ -1206,9 +1232,11 @@ export class Viewport3D {
                 toId: hitEnd?.objectId,
               },
             });
+          } else {
+            this.sceneDirty = true;
           }
         } else if (st.mode === 'ruler') {
-          const hitEnd = this.hitTest3DObjectAndPoint(e.clientX, e.clientY, false);
+          const hitEnd = this.hitTest3DObjectAndPoint(e.clientX, e.clientY, false, true);
           this.store.activeRuler = null;
           const dist = Math.hypot(st.curPt[0] - st.startPt[0], st.curPt[2] - st.startPt[2]);
           if (dist >= 0.5) {
@@ -1233,7 +1261,7 @@ export class Viewport3D {
     });
 
     this.renderer.domElement.addEventListener('pointerup', (e) => {
-      if (this.store.isPlaytesting || e.button !== 0 || this.draw3DState) return;
+      if (this.store.isPlaytesting || e.button !== 0 || this.draw3DState || this.store.activeTool !== 'select') return;
       const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
       if (dist > 5 || this.isDraggingTransform) return;
 
@@ -1832,11 +1860,20 @@ export class Viewport3D {
     this.store.notifyViewportsOnly(false);
   }
 
+  private elevationToHeatColor(topY: number): string {
+    const t = Math.max(0, Math.min(1, (topY + 1) / 8));
+    const hue = Math.round(210 - t * 185);
+    return `hsl(${hue}, 70%, 42%)`;
+  }
+
   private buildMeshForBlock(b: LevelBlock): THREE.Object3D {
     const meta = ROLE_META[b.role] || ROLE_META.walkable;
     const isSelected = this.store.selection?.kind === 'block' && this.store.selection.id === b.id;
     const isTrigger = b.role.startsWith('trigger_') || b.role === 'water' || b.role === 'hazard';
-    const baseColor = new THREE.Color(b.color || meta.color);
+    const topY = Number((b.position[1] + b.size[1] / 2).toFixed(2));
+    const baseColor = new THREE.Color(
+      this.store.overlays.elevationHeatmap ? this.elevationToHeatColor(topY) : b.color || meta.color
+    );
 
     // 同尺寸体块共用一张网格贴图（只是 repeat 不同的克隆），不再每次重建都新建
     const repX = Math.max(1, b.size[0] / 2);
@@ -1997,6 +2034,7 @@ export class Viewport3D {
     const sel = this.store.selection;
     const selectedId = sel?.kind === 'block' ? sel.id : '';
     const clip = this.store.doc.sectionPlane.clip3D ? '|clip' : '';
+    const heat = this.store.overlays.elevationHeatmap ? '|heat' : '';
     const liveSlots = new Set<string>();
     const createdNow: THREE.Object3D[] = [];
 
@@ -2005,7 +2043,7 @@ export class Viewport3D {
       // 旧存档里可能有重复 id：重复者用带序号的槽位，保证每个体块都有自己的网格
       const slot = liveSlots.has(b.id) ? `${b.id}#${liveSlots.size}` : b.id;
       liveSlots.add(slot);
-      const key = `${JSON.stringify(b)}${b.id === selectedId ? '|sel' : ''}${clip}|${ROLE_META[b.role]?.color ?? ''}`;
+      const key = `${JSON.stringify(b)}${b.id === selectedId ? '|sel' : ''}${clip}${heat}|${ROLE_META[b.role]?.color ?? ''}`;
       const existing = this.meshMap.get(slot);
       if (existing && this.blockMeshKeys.get(slot) === key) continue;
       if (existing) {
@@ -2065,6 +2103,7 @@ export class Viewport3D {
       doc.jumps,
       doc.sightlines,
       this.store.activeRuler,
+      this.draw3DState?.mode === 'jump' ? [this.draw3DState.startPt, this.draw3DState.curPt] : null,
       this.store.overlays,
       doc.metricsProfile,
       this.store.selection,
@@ -2280,7 +2319,13 @@ export class Viewport3D {
     }
 
     if (this.store.overlays.showJumpArcs) {
-      for (const jmp of this.store.doc.jumps) {
+      const jumpsToDraw = [
+        ...this.store.doc.jumps,
+        ...(this.draw3DState?.mode === 'jump'
+          ? [{ id: '__preview__', name: 'Preview', from: this.draw3DState.startPt, to: this.draw3DState.curPt }]
+          : []),
+      ];
+      for (const jmp of jumpsToDraw) {
         const evalRes = evaluateJumpLink(jmp.from, jmp.to, this.store.doc.metricsProfile, this.store.doc.blocks);
         const col =
           evalRes.status === 'safe'

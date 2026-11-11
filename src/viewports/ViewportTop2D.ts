@@ -19,8 +19,8 @@ import { getTheme } from '../core/theme';
 import { BlockType, LevelBlock, LevelPOI, POICategory, SightlineLink, Vec2, Vec3 } from '../core/types';
 
 type DragInteraction =
-  | { type: 'pan'; startMouse: Vec2; startPan: Vec2 }
-  | { type: 'move_block'; id: string; startWorld: Vec2; origPos: Vec3 }
+  | { type: 'pan'; startMouse: Vec2; startPan: Vec2; moved?: boolean }
+  | { type: 'move_block'; id: string; startWorld: Vec2; origPos: Vec3; moved?: boolean }
   | {
       type: 'resize_block';
       id: string;
@@ -28,11 +28,12 @@ type DragInteraction =
       startWorld: Vec2;
       origPos: Vec3;
       origSize: Vec3;
+      moved?: boolean;
     }
-  | { type: 'move_poi'; id: string; startWorld: Vec2; origPos: Vec3 }
-  | { type: 'rotate_poi'; id: string; centerWorld: Vec2 }
-  | { type: 'move_waypoint'; poiId: string; wpIndex: number }
-  | { type: 'section_handle'; which: 'start' | 'end' | 'both'; startWorld: Vec2; origStart: Vec2; origEnd: Vec2 }
+  | { type: 'move_poi'; id: string; startWorld: Vec2; origPos: Vec3; moved?: boolean }
+  | { type: 'rotate_poi'; id: string; centerWorld: Vec2; moved?: boolean }
+  | { type: 'move_waypoint'; poiId: string; wpIndex: number; moved?: boolean }
+  | { type: 'section_handle'; which: 'start' | 'end' | 'both'; startWorld: Vec2; origStart: Vec2; origEnd: Vec2; moved?: boolean }
   | { type: 'draw_block'; blockType: BlockType; startWorld: Vec2; curWorld: Vec2 }
   | { type: 'draw_jump'; startWorld: Vec3; curWorld: Vec3; fromId?: string }
   | { type: 'ruler'; startWorld: Vec3; curWorld: Vec3; fromId?: string; fromHeightOffset: number };
@@ -50,8 +51,18 @@ export class ViewportTop2D {
   private drag: DragInteraction | null = null;
   private mouseWorld: Vec2 = [0, 0];
   private spacePressed = false;
-  public activePOICategory: POICategory = 'spawn_enemy';
-  public activePathType: 'main' | 'flank' | 'secret' | 'patrol' = 'main';
+  public get activePOICategory(): POICategory {
+    return this.store.creationDefaults.poiCategory;
+  }
+  public set activePOICategory(val: POICategory) {
+    this.store.creationDefaults.poiCategory = val;
+  }
+  public get activePathType(): 'main' | 'flank' | 'secret' | 'patrol' {
+    return this.store.creationDefaults.pathType;
+  }
+  public set activePathType(val: 'main' | 'flank' | 'secret' | 'patrol') {
+    this.store.creationDefaults.pathType = val;
+  }
   private buildingPathId: string | null = null;
 
   constructor(container: HTMLElement, store: LevelStore) {
@@ -344,13 +355,13 @@ export class ViewportTop2D {
 
       const secHit = this.hitTestSectionHandle(sx, sy);
       if (secHit) {
-        this.store.pushUndoSnapshot();
         this.drag = {
           type: 'section_handle',
           which: secHit,
           startWorld: world,
           origStart: [...this.store.doc.sectionPlane.start],
           origEnd: [...this.store.doc.sectionPlane.end],
+          moved: false,
         };
         return;
       }
@@ -375,6 +386,7 @@ export class ViewportTop2D {
           startWorld: snapped,
           origStart: snapped,
           origEnd: snapped,
+          moved: true,
         };
         return;
       }
@@ -487,11 +499,11 @@ export class ViewportTop2D {
       const wpHit = this.hitTestEnemyWaypoint(sx, sy);
       if (wpHit) {
         this.store.setSelection({ kind: 'poi', id: wpHit.poiId });
-        this.store.pushUndoSnapshot();
         this.drag = {
           type: 'move_waypoint',
           poiId: wpHit.poiId,
           wpIndex: wpHit.wpIndex,
+          moved: false,
         };
         return;
       }
@@ -499,7 +511,6 @@ export class ViewportTop2D {
       const resizeHandle = this.hitTestSelectedBlockHandles(sx, sy);
       if (resizeHandle) {
         const blk = this.store.getSelectedBlock()!;
-        this.store.pushUndoSnapshot();
         this.drag = {
           type: 'resize_block',
           id: blk.id,
@@ -507,6 +518,7 @@ export class ViewportTop2D {
           startWorld: world,
           origPos: [...blk.position],
           origSize: [...blk.size],
+          moved: false,
         };
         return;
       }
@@ -514,12 +526,12 @@ export class ViewportTop2D {
       const poiHit = this.hitTestPOI(sx, sy);
       if (poiHit) {
         this.store.setSelection({ kind: 'poi', id: poiHit.poi.id });
-        this.store.pushUndoSnapshot();
         if (poiHit.mode === 'rotate') {
           this.drag = {
             type: 'rotate_poi',
             id: poiHit.poi.id,
             centerWorld: [poiHit.poi.position[0], poiHit.poi.position[2]],
+            moved: false,
           };
         } else {
           this.drag = {
@@ -527,6 +539,7 @@ export class ViewportTop2D {
             id: poiHit.poi.id,
             startWorld: world,
             origPos: [...poiHit.poi.position],
+            moved: false,
           };
         }
         return;
@@ -536,12 +549,12 @@ export class ViewportTop2D {
       if (blkHit) {
         this.store.setSelection({ kind: 'block', id: blkHit.id });
         if (!blkHit.locked) {
-          this.store.pushUndoSnapshot();
           this.drag = {
             type: 'move_block',
             id: blkHit.id,
             startWorld: world,
             origPos: [...blkHit.position],
+            moved: false,
           };
         }
         return;
@@ -585,7 +598,13 @@ export class ViewportTop2D {
         const wy = this.getSurfaceElevationAt(wx, wz);
         const poi = this.store.doc.pois.find((p) => p.id === (this.drag as { poiId: string }).poiId);
         if (poi?.enemyConfig?.waypoints) {
-          poi.enemyConfig.waypoints[(this.drag as { wpIndex: number }).wpIndex] = [wx, wy, wz];
+          const curWp = poi.enemyConfig.waypoints[this.drag.wpIndex];
+          if (curWp && Math.abs(curWp[0] - wx) < 1e-4 && Math.abs(curWp[2] - wz) < 1e-4) return;
+          if (!this.drag.moved) {
+            this.store.pushUndoSnapshot();
+            this.drag.moved = true;
+          }
+          poi.enemyConfig.waypoints[this.drag.wpIndex] = [wx, wy, wz];
           this.store.notifyViewportsOnly(false);
         }
         return;
@@ -594,6 +613,11 @@ export class ViewportTop2D {
       if (this.drag.type === 'section_handle') {
         const dx = this.store.snapValue(world[0] - this.drag.startWorld[0]);
         const dz = this.store.snapValue(world[1] - this.drag.startWorld[1]);
+        if (Math.abs(dx) < 1e-4 && Math.abs(dz) < 1e-4 && !this.drag.moved) return;
+        if (!this.drag.moved) {
+          this.store.pushUndoSnapshot();
+          this.drag.moved = true;
+        }
         if (this.drag.which === 'start') {
           this.store.updateSectionEndpointsLive(
             [this.drag.origStart[0] + dx, this.drag.origStart[1] + dz],
@@ -619,6 +643,11 @@ export class ViewportTop2D {
       if (this.drag.type === 'move_block') {
         const dx = this.store.snapValue(world[0] - this.drag.startWorld[0]);
         const dz = this.store.snapValue(world[1] - this.drag.startWorld[1]);
+        if (Math.abs(dx) < 1e-4 && Math.abs(dz) < 1e-4 && !this.drag.moved) return;
+        if (!this.drag.moved) {
+          this.store.pushUndoSnapshot();
+          this.drag.moved = true;
+        }
         this.store.updateBlockLive(
           this.drag.id,
           {
@@ -636,6 +665,11 @@ export class ViewportTop2D {
       if (this.drag.type === 'resize_block') {
         const dx = this.store.snapValue(world[0] - this.drag.startWorld[0]);
         const dz = this.store.snapValue(world[1] - this.drag.startWorld[1]);
+        if (Math.abs(dx) < 1e-4 && Math.abs(dz) < 1e-4 && !this.drag.moved) return;
+        if (!this.drag.moved) {
+          this.store.pushUndoSnapshot();
+          this.drag.moved = true;
+        }
         const h = this.drag.handle;
         let minX = this.drag.origPos[0] - this.drag.origSize[0] / 2;
         let maxX = this.drag.origPos[0] + this.drag.origSize[0] / 2;
@@ -661,6 +695,11 @@ export class ViewportTop2D {
       if (this.drag.type === 'move_poi') {
         const wx = this.store.snapValue(world[0]);
         const wz = this.store.snapValue(world[1]);
+        if (Math.abs(wx - this.drag.origPos[0]) < 1e-4 && Math.abs(wz - this.drag.origPos[2]) < 1e-4 && !this.drag.moved) return;
+        if (!this.drag.moved) {
+          this.store.pushUndoSnapshot();
+          this.drag.moved = true;
+        }
         const wy = this.getSurfaceElevationAt(wx, wz);
         this.store.updatePOILive(this.drag.id, { position: [wx, wy, wz] }, false);
         return;
@@ -673,6 +712,10 @@ export class ViewportTop2D {
         if (deg < 0) deg += 360;
         const snapAngle = e.shiftKey ? 1 : 5;
         deg = Math.round(deg / snapAngle) * snapAngle;
+        if (!this.drag.moved) {
+          this.store.pushUndoSnapshot();
+          this.drag.moved = true;
+        }
         this.store.updatePOILive(this.drag.id, { yaw: deg }, false);
         return;
       }
@@ -714,7 +757,9 @@ export class ViewportTop2D {
         d.type === 'move_waypoint' ||
         d.type === 'section_handle'
       ) {
-        this.store.notify(true);
+        if (d.moved) {
+          this.store.notify(true);
+        }
         return;
       }
 
@@ -990,8 +1035,11 @@ export class ViewportTop2D {
           ctx.setLineDash([]);
 
           // Status badge above enemy
-          ctx.font = 'bold 10px Inter, sans-serif';
-          const tag = `${det.statusLabel} · 寻路 ${det.chaseDistance}m (${det.chaseTimeSec}s)`;
+          ctx.font = 'bold 9.5px Inter, sans-serif';
+          const shortStatus = det.statusLabel.split(' ')[0];
+          const tag = isSelected || this.zoom >= 24
+            ? `${shortStatus} · ${det.chaseDistance}m (${det.chaseTimeSec}s)`
+            : `${shortStatus} ${det.chaseDistance}m`;
           const tw = ctx.measureText(tag).width + 10;
           ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
           ctx.fillRect(px - tw / 2, py - 28, tw, 16);
@@ -1095,31 +1143,40 @@ export class ViewportTop2D {
       ctx.setLineDash([]);
     }
 
-    if (this.store.overlays.showDimensions && pw > 38 && pd > 22) {
+    if (this.store.overlays.showDimensions && (isSelected || (pw > 44 && pd > 22))) {
+      const showTwoLines = isSelected || (pw > 70 && pd > 36);
       ctx.fillStyle = '#f8fafc';
-      ctx.font = '600 10px Inter, system-ui, sans-serif';
+      ctx.font = '600 9.5px Inter, system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(b.name, 0, -2);
-
-      ctx.fillStyle = 'rgba(226, 232, 240, 0.8)';
-      ctx.font = '10px JetBrains Mono, monospace';
-      const elevStr = `${topY >= 0 ? '+' : ''}${topY}m (${b.size[0]}×${b.size[2]}m)`;
-      ctx.fillText(elevStr, 0, 11);
+      if (showTwoLines) {
+        ctx.fillText(b.name, 0, -2);
+        ctx.fillStyle = 'rgba(226, 232, 240, 0.78)';
+        ctx.font = '9.5px JetBrains Mono, monospace';
+        const elevStr = isSelected
+          ? `${topY >= 0 ? '+' : ''}${topY}m (${b.size[0]}×${b.size[2]}m)`
+          : `${topY >= 0 ? '+' : ''}${topY}m`;
+        ctx.fillText(elevStr, 0, 10);
+      } else {
+        ctx.fillText(b.name, 0, 3);
+      }
     }
 
     // Draw 📝 Design Note & Tag Badge on Block if present
-    if (this.store.overlays.showDesignNotes && (b.notes || b.designTag) && pw > 24 && pd > 16) {
-      const badgeTxt = b.designTag ? `📝 ${b.designTag.split(' ')[0]}` : '📝 备注';
+    if (this.store.overlays.showDesignNotes && (b.notes || b.designTag) && (isSelected || (pw > 34 && pd > 20))) {
+      const showFullTag = isSelected || (this.zoom >= 24 && pw > 64);
+      const badgeTxt = showFullTag
+        ? (b.designTag ? `📝 ${b.designTag.split(' ')[0]}` : '📝 备注')
+        : '📝';
       ctx.font = '600 9px Inter, sans-serif';
-      const bw = Math.min(pw - 4, ctx.measureText(badgeTxt).width + 10);
+      const bw = Math.min(pw - 4, ctx.measureText(badgeTxt).width + 8);
       ctx.fillStyle = isSelected ? 'rgba(56, 189, 248, 0.92)' : 'rgba(15, 23, 42, 0.86)';
-      ctx.fillRect(-bw / 2, -pd / 2 + 3, bw, 14);
+      ctx.fillRect(-bw / 2, -pd / 2 + 3, bw, 13);
       ctx.strokeStyle = isSelected ? '#ffffff' : '#facc15';
       ctx.lineWidth = 1;
-      ctx.strokeRect(-bw / 2, -pd / 2 + 3, bw, 14);
+      ctx.strokeRect(-bw / 2, -pd / 2 + 3, bw, 13);
       ctx.fillStyle = isSelected ? '#0f172a' : '#fef08a';
       ctx.textAlign = 'center';
-      ctx.fillText(badgeTxt, 0, -pd / 2 + 13);
+      ctx.fillText(badgeTxt, 0, -pd / 2 + 12);
     }
 
     ctx.restore();
@@ -1250,14 +1307,16 @@ export class ViewportTop2D {
       ctx.fillRect(camX - 5, camY - 4, 10, 8);
       ctx.strokeRect(camX - 5, camY - 4, 10, 8);
 
-      ctx.fillStyle = '#e0f2fe';
-      ctx.font = 'bold 9px JetBrains Mono, monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(
-        `🎥 ${rig.mode.toUpperCase()} FOV:${rig.cameraFov}°${rig.springArmClipped ? ' [防穿墙]' : ''}`,
-        camX,
-        camY + 14
-      );
+      if ((this.store.selection?.kind === 'poi' && this.store.selection.id === poi.id) || this.zoom >= 24) {
+        ctx.fillStyle = '#e0f2fe';
+        ctx.font = 'bold 9px JetBrains Mono, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(
+          `🎥 ${rig.mode.toUpperCase()} ${rig.cameraFov}°${rig.springArmClipped ? ' [防穿墙]' : ''}`,
+          camX,
+          camY + 14
+        );
+      }
       ctx.restore();
     }
   }
@@ -1314,8 +1373,10 @@ export class ViewportTop2D {
     const [lx, ly] = this.worldToScreen(path.points[midIdx][0], path.points[midIdx][2]);
     const runSec = (totalLen / Math.max(0.5, this.store.doc.metricsProfile.runSpeed)).toFixed(1);
     ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-    const tag = `${path.name}: ${totalLen.toFixed(1)}m (~${runSec}s)`;
-    ctx.font = '600 10px Inter, sans-serif';
+    const tag = isSel || this.zoom >= 24
+      ? `${path.name}: ${totalLen.toFixed(1)}m (~${runSec}s)`
+      : `${path.name} ${totalLen.toFixed(0)}m`;
+    ctx.font = '600 9.5px Inter, sans-serif';
     const tw = ctx.measureText(tag).width + 10;
     ctx.fillRect(lx - tw / 2, ly - 20, tw, 16);
     ctx.fillStyle = meta.color;
@@ -1630,19 +1691,24 @@ export class ViewportTop2D {
 
     const mx = (x0 + x1) / 2;
     const my = (y0 + y1) / 2;
-    const label = los.blocked
-      ? `📏 [${titlePrefix}] ${los.distance}m | 被 [${los.hitBlockName}] 遮挡 (@${los.hitDistance}m)`
-      : `📏 [${titlePrefix}] ${los.distance}m | 3D视线畅通 (Clear LOS)`;
-    ctx.font = '600 10px Inter, sans-serif';
-    const tw = ctx.measureText(label).width + 12;
+    const showFullLos = selected || this.zoom >= 26;
+    const label = showFullLos
+      ? (los.blocked
+          ? `📏 [${titlePrefix}] ${los.distance}m | 被 [${los.hitBlockName}] 遮挡 (@${los.hitDistance}m)`
+          : `📏 [${titlePrefix}] ${los.distance}m | 视线畅通`)
+      : (los.blocked
+          ? `📏 ${los.distance}m ✖遮挡`
+          : `📏 ${los.distance}m ✓`);
+    ctx.font = '600 9.5px Inter, sans-serif';
+    const tw = ctx.measureText(label).width + 10;
     ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
-    ctx.fillRect(mx - tw / 2, my - 18, tw, 17);
+    ctx.fillRect(mx - tw / 2, my - 18, tw, 16);
     ctx.strokeStyle = los.blocked ? '#ef4444' : '#4ade80';
     ctx.lineWidth = 1;
-    ctx.strokeRect(mx - tw / 2, my - 18, tw, 17);
+    ctx.strokeRect(mx - tw / 2, my - 18, tw, 16);
     ctx.fillStyle = los.blocked ? '#fca5a5' : '#86efac';
     ctx.textAlign = 'center';
-    ctx.fillText(label, mx, my - 6);
+    ctx.fillText(label, mx, my - 7);
     ctx.restore();
   }
 

@@ -107,12 +107,14 @@ export function syncFormState(root: Element): void {
     if (el instanceof HTMLInputElement) {
       if (el.type === 'checkbox' || el.type === 'radio') {
         if (el.checked !== el.defaultChecked) el.checked = el.defaultChecked;
+      } else if (el.type === 'range' || el.type === 'color') {
+        if (el.value !== el.defaultValue) el.value = el.defaultValue;
       } else if (el.type !== 'file' && el !== active && el.value !== el.defaultValue) {
         el.value = el.defaultValue;
       }
     } else if (el instanceof HTMLTextAreaElement) {
       if (el !== active && el.value !== el.defaultValue) el.value = el.defaultValue;
-    } else if (el !== active) {
+    } else {
       let idx = Array.from(el.options).findIndex((o) => o.defaultSelected);
       if (idx < 0) idx = el.options.length > 0 ? 0 : -1;
       if (el.selectedIndex !== idx) el.selectedIndex = idx;

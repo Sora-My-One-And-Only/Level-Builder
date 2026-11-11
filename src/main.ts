@@ -499,6 +499,7 @@ function prepareDockMarkup(root: HTMLElement): void {
 function prepareSidebarMarkup(root: HTMLElement): void {
   enhanceCollapsibleCards(root);
   buildNumberInputStructure(root);
+  root.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach(paintRangeFill);
 }
 
 /**
@@ -511,7 +512,7 @@ function enhanceCollapsibleCards(container: HTMLElement): void {
     if (!titleEl) return;
 
     const rawText = (titleEl.querySelector('span')?.textContent || titleEl.textContent || `card_${idx}`)
-      .replace(/\(\d+.*?\)/g, '')
+      .replace(/\([^)]*\)/g, '')
       .trim();
     // The key is derived from the pristine title text; on later (binding) passes reuse it
     const cardKey = card.dataset.cardKey || `${activeSidebarTab}:${rawText}`;
@@ -769,9 +770,6 @@ function renderTopBarNow(): void {
       const roomId = val.replace('room:', '');
       const doc = createSceneFromRoomTemplate(roomId);
       store.setDocument(doc, true, true);
-      if (doc.metadata.dimensionMode) {
-        store.setDimensionMode(doc.metadata.dimensionMode);
-      }
     }
   };
 
@@ -2704,15 +2702,15 @@ function renderAITab(container: HTMLElement): void {
     <!-- Categorized Game Room Template Generator -->
     <div class="panel-card" style="border-color:rgba(56,189,248,0.5);">
       <div class="card-title">
-        <span style="color:#38bdf8;">🏗️ 游戏品类常见房间模板库 (${ROOM_TEMPLATES.length}套)</span>
+        <span style="color:#38bdf8;">🏗️ 房间模板库 (${ROOM_TEMPLATES.length}套)</span>
       </div>
-      <div style="font-size:10px;color:var(--text-muted);line-height:1.4;">
-        按游戏类型分类收录经典关卡拓扑结构（自带全套<b>物体设计思路备注</b>、<b>机关联动</b>与<b>2D/3D相机预设</b>），支持一键拼接到当前关卡或新建独立场景：
+      <div style="font-size:10px;color:var(--text-muted);line-height:1.35;">
+        按品类收录经典关卡拓扑（含设计备注、机关联动与相机预设）：
       </div>
 
       <div class="room-category-pills">
         <button class="room-cat-pill ${activeRoomCategoryFilter === 'all' ? 'active' : ''}" data-rcat="all">
-          🌟 全部品类 (${ROOM_TEMPLATES.length})
+          🌟 全部 (${ROOM_TEMPLATES.length})
         </button>
         ${ROOM_CATEGORIES.map(
           (cat) => `
@@ -2731,23 +2729,26 @@ function renderAITab(container: HTMLElement): void {
                 ? '🍄 2D横版'
                 : tpl.dimensionMode === '2d_topdown'
                 ? '🗡️ 2D俯视'
-                : '🧊 3D空间';
+                : '🧊 3D';
             return `
               <div class="room-template-card">
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;">
                   <span style="font-weight:700;font-size:11.5px;color:#f8fafc;">${tpl.icon} ${tpl.nameZh}</span>
                   <span style="font-size:9.5px;padding:1px 6px;border-radius:4px;background:rgba(56,189,248,0.18);color:#38bdf8;white-space:nowrap;">${dimLabel} · ${tpl.sizeLabel}</span>
                 </div>
-                <div style="font-size:10px;color:#94a3b8;">📐 空间结构: <b style="color:#cbd5e1;">${tpl.summaryZh}</b></div>
-                <div style="font-size:10px;color:#cbd5e1;line-height:1.4;background:var(--bg-0);padding:5px 6px;border-radius:4px;border-left:2px solid var(--accent);">
-                  💡 <b>设计原理</b>: ${tpl.designTheoryZh}
-                </div>
+                <div style="font-size:10px;color:#cbd5e1;">${tpl.summaryZh}</div>
+                <details style="font-size:10px;color:#94a3b8;">
+                  <summary style="cursor:pointer;color:#38bdf8;user-select:none;">💡 设计原理</summary>
+                  <div style="margin-top:4px;color:#cbd5e1;line-height:1.4;background:var(--bg-0);padding:5px 6px;border-radius:4px;border-left:2px solid var(--accent);">
+                    ${tpl.designTheoryZh}
+                  </div>
+                </details>
                 <div class="room-template-actions">
                   <button class="btn btn-primary" data-room-append="${tpl.id}" style="justify-content:center;font-size:10px;">
-                    ➕ 拼接追加到当前关卡
+                    ➕ 拼接到当前关卡
                   </button>
                   <button class="btn" data-room-load="${tpl.id}" style="justify-content:center;font-size:10px;">
-                    📂 设为独立新场景
+                    📂 设为新场景
                   </button>
                 </div>
               </div>
@@ -2791,7 +2792,7 @@ claude mcp add levelforge -- npx tsx server/mcp-server.ts</div>
   container.querySelectorAll<HTMLButtonElement>('[data-rcat]').forEach((btn) => {
     btn.onclick = () => {
       activeRoomCategoryFilter = btn.dataset.rcat as RoomCategoryId | 'all';
-      renderAITab(container);
+      renderSidebar();
     };
   });
 
@@ -2811,9 +2812,6 @@ claude mcp add levelforge -- npx tsx server/mcp-server.ts</div>
       const tplId = btn.dataset.roomLoad!;
       const doc = createSceneFromRoomTemplate(tplId);
       store.setDocument(doc, true, true);
-      if (doc.metadata.dimensionMode) {
-        store.setDimensionMode(doc.metadata.dimensionMode);
-      }
     };
   });
 
