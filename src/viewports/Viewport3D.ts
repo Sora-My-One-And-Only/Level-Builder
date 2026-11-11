@@ -53,7 +53,6 @@ export class Viewport3D {
   private blockPopIns = new Map<THREE.Object3D, number>();
   private hasSyncedBlocksOnce = false;
   private overlayRenderKey = '';
-  private gridTexCache = new Map<string, THREE.Texture>();
   private lastPipBadgeKey = '';
 
   // Unity RMB Flythrough Camera state
@@ -607,38 +606,253 @@ export class Viewport3D {
   }
 
   private createMetricCheckerTexture(): THREE.CanvasTexture {
+    const size = 1024; // 1024x1024 px for a 2m x 2m world tile (512 px = 1.0m)
+    const half = size / 2; // 512 px = 1.0m
+    const quarter = size / 4; // 256 px = 0.5m
+    const eighth = size / 8; // 128 px = 0.25m
+
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 256;
+    canvas.width = size;
+    canvas.height = size;
     const ctx = canvas.getContext('2d')!;
 
-    ctx.fillStyle = '#cbd5e1';
-    ctx.fillRect(0, 0, 256, 256);
-    ctx.fillStyle = '#94a3b8';
-    ctx.fillRect(0, 0, 128, 128);
-    ctx.fillRect(128, 128, 128, 128);
+    // 1. Base 2x2 meter checkerboard (neutral high-value luminance so material color tints cleanly)
+    for (let row = 0; row < 2; row++) {
+      for (let col = 0; col < 2; col++) {
+        const isLight = (row + col) % 2 === 0;
+        const x0 = col * half;
+        const y0 = row * half;
 
-    ctx.strokeStyle = 'rgba(15, 23, 42, 0.22)';
-    ctx.lineWidth = 2;
-    for (let i = 0; i <= 256; i += 64) {
-      ctx.beginPath();
-      ctx.moveTo(i, 0);
-      ctx.lineTo(i, 256);
-      ctx.moveTo(0, i);
-      ctx.lineTo(256, i);
-      ctx.stroke();
+        ctx.fillStyle = isLight ? '#dce4ee' : '#b8c4d4';
+        ctx.fillRect(x0, y0, half, half);
+
+        // Subtle inner bevel highlight
+        ctx.strokeStyle = isLight ? 'rgba(255, 255, 255, 0.45)' : 'rgba(255, 255, 255, 0.28)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x0 + 2, y0 + 2, half - 4, half - 4);
+
+        // 2. 0.25m (25cm) fine subdivision grid inside this 1m x 1m cell
+        ctx.strokeStyle = isLight ? 'rgba(15, 23, 42, 0.13)' : 'rgba(15, 23, 42, 0.18)';
+        ctx.lineWidth = 1.5;
+        for (let sub = 1; sub < 4; sub++) {
+          if (sub === 2) continue; // 0.5m drawn separately
+          const sx = x0 + sub * eighth;
+          const sy = y0 + sub * eighth;
+          ctx.beginPath();
+          ctx.moveTo(sx, y0);
+          ctx.lineTo(sx, y0 + half);
+          ctx.moveTo(x0, sy);
+          ctx.lineTo(x0 + half, sy);
+          ctx.stroke();
+        }
+
+        // 3. 0.5m (50cm) half-meter dashed/solid sub-grid line
+        const midX = x0 + quarter;
+        const midY = y0 + quarter;
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.34)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([10, 6]);
+        ctx.beginPath();
+        ctx.moveTo(midX, y0);
+        ctx.lineTo(midX, y0 + half);
+        ctx.moveTo(x0, midY);
+        ctx.lineTo(x0 + half, midY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 4. Subtle 45-degree prototype diagonal reference lines near corners
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.10)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0 + half);
+        ctx.lineTo(x0 + half, y0);
+        ctx.stroke();
+
+        // 5. Center 0.5m target reticle (circle + crosshair)
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.38)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(midX, midY, 18, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(midX - 28, midY);
+        ctx.lineTo(midX + 28, midY);
+        ctx.moveTo(midX, midY - 28);
+        ctx.lineTo(midX, midY + 28);
+        ctx.stroke();
+
+        // 6. Graduated 10cm (0.1m) ruler ticks along bottom & left edges of each 1m cell
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
+        ctx.lineWidth = 2;
+        for (let t = 1; t < 10; t++) {
+          const offsetPx = (t / 10) * half;
+          const tickLen = t === 5 ? 16 : t % 2 === 0 ? 11 : 7;
+          ctx.beginPath();
+          // Bottom edge ticks (pointing up)
+          ctx.moveTo(x0 + offsetPx, y0 + half);
+          ctx.lineTo(x0 + offsetPx, y0 + half - tickLen);
+          // Left edge ticks (pointing right)
+          ctx.moveTo(x0, y0 + half - offsetPx);
+          ctx.lineTo(x0 + tickLen, y0 + half - offsetPx);
+          // Top edge ticks (pointing down)
+          ctx.moveTo(x0 + offsetPx, y0);
+          ctx.lineTo(x0 + offsetPx, y0 + Math.round(tickLen * 0.7));
+          // Right edge ticks (pointing left)
+          ctx.moveTo(x0 + half, y0 + half - offsetPx);
+          ctx.lineTo(x0 + half - Math.round(tickLen * 0.7), y0 + half - offsetPx);
+          ctx.stroke();
+        }
+
+        // 7. Major 1.0m cell border & corner L-brackets
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.68)';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(x0, y0, half, half);
+
+        // Corner high-contrast L-markers
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.lineWidth = 3;
+        const bLen = 22;
+        const pad = 6;
+        ctx.beginPath();
+        // Top-left
+        ctx.moveTo(x0 + pad, y0 + pad + bLen);
+        ctx.lineTo(x0 + pad, y0 + pad);
+        ctx.lineTo(x0 + pad + bLen, y0 + pad);
+        // Top-right
+        ctx.moveTo(x0 + half - pad - bLen, y0 + pad);
+        ctx.lineTo(x0 + half - pad, y0 + pad);
+        ctx.lineTo(x0 + half - pad, y0 + pad + bLen);
+        // Bottom-left
+        ctx.moveTo(x0 + pad, y0 + half - pad - bLen);
+        ctx.lineTo(x0 + pad, y0 + half - pad);
+        ctx.lineTo(x0 + pad + bLen, y0 + half - pad);
+        // Bottom-right
+        ctx.moveTo(x0 + half - pad - bLen, y0 + half - pad);
+        ctx.lineTo(x0 + half - pad, y0 + half - pad);
+        ctx.lineTo(x0 + half - pad, y0 + half - pad - bLen);
+        ctx.stroke();
+
+        // 8. Prototype Dimension Labels ("1m × 1m", "0.5m", "0.25m", "100cm")
+        // Top-left badge: "1m × 1m"
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+        ctx.beginPath();
+        ctx.roundRect(x0 + 16, y0 + 16, 112, 32, 5);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.fillStyle = '#f8fafc';
+        ctx.font = 'bold 20px "JetBrains Mono", Consolas, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('1m × 1m', x0 + 72, y0 + 33);
+
+        // Top-right scale tag: "GRID 1.0m"
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.62)';
+        ctx.font = 'bold 15px "JetBrains Mono", Consolas, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText('1.0m', x0 + half - 18, y0 + 28);
+
+        // Midpoint 0.5m labels (horizontal & vertical)
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.65)';
+        ctx.font = 'bold 15px "JetBrains Mono", Consolas, monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('0.5m', midX + 6, y0 + 24);
+        ctx.fillText('0.5m', x0 + 16, midY - 10);
+
+        // Quarter 0.25m micro-label
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.48)';
+        ctx.font = '600 13px "JetBrains Mono", Consolas, monospace';
+        ctx.fillText('0.25m', x0 + eighth + 5, y0 + half - 22);
+
+        // Bottom-right metric tag: "100 cm"
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.62)';
+        ctx.font = 'bold 14px "JetBrains Mono", Consolas, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText('100cm', x0 + half - 18, y0 + half - 20);
+      }
     }
-
-    ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(0, 0, 128, 128);
-    ctx.strokeRect(128, 128, 128, 128);
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
-    tex.anisotropy = 4;
+    tex.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy() || 4);
+    tex.needsUpdate = true;
     return tex;
+  }
+
+  /**
+   * Computes world-scale metric triplanar UVs on a BufferGeometry so that every
+   * 1m x 1m square in 3D space maps to exactly half a 2m x 2m prototype texture tile
+   * without stretching on any face (boxes, walls, ramps, stairs, arches, cylinders).
+   */
+  private applyMetricTriplanarUVs(
+    geo: THREE.BufferGeometry,
+    partOffset: Vec3,
+    blockBottomY: number,
+    cylRadius = 0
+  ): THREE.BufferGeometry {
+    const target = geo.index ? geo.toNonIndexed() : geo;
+    target.computeVertexNormals();
+
+    const posAttr = target.getAttribute('position') as THREE.BufferAttribute;
+    const normAttr = target.getAttribute('normal') as THREE.BufferAttribute;
+    const count = posAttr.count;
+    const uvs = new Float32Array(count * 2);
+    // Offset by an even multiple of 2m so negative coordinates never flip fractional UV phase
+    const phaseShift = 1000;
+
+    for (let i = 0; i < count; i++) {
+      const px = posAttr.getX(i) + partOffset[0];
+      const py = posAttr.getY(i) + partOffset[1] - blockBottomY; // 0m at bottom of block, +Y upward
+      const pz = posAttr.getZ(i) + partOffset[2];
+
+      const nx = normAttr.getX(i);
+      const ny = normAttr.getY(i);
+      const nz = normAttr.getZ(i);
+      const anx = Math.abs(nx);
+      const any = Math.abs(ny);
+      const anz = Math.abs(nz);
+
+      let u = 0;
+      let v = 0;
+
+      if (cylRadius > 0 && any < 0.8) {
+        // Cylindrical side wall: map circumferential arc length in meters
+        const angle = Math.atan2(px, pz); // -PI..PI
+        const arcMeters = angle * cylRadius;
+        u = (arcMeters + phaseShift) / 2;
+        v = (py + phaseShift) / 2;
+      } else if (any >= anx && any >= anz) {
+        // Horizontal or sloped top/bottom face (1 UV unit = 2 meters)
+        u = (px + phaseShift) / 2;
+        if (any < 0.98 && anz > 0.05) {
+          // Sloped ramp surface: measure true distance along the slope
+          const slopeSign = nz >= 0 ? -1 : 1;
+          const runAndRise = Math.hypot(pz, py) * (pz * slopeSign >= 0 ? 1 : -1);
+          v = (runAndRise + phaseShift) / 2;
+        } else {
+          v = (-pz + phaseShift) / 2;
+        }
+      } else if (anz >= anx) {
+        // Front (+Z) or Back (-Z) vertical face: u = horizontal X, v = height Y from block bottom
+        const horizX = nz >= 0 ? px : -px;
+        u = (horizX + phaseShift) / 2;
+        v = (py + phaseShift) / 2;
+      } else {
+        // Right (+X) or Left (-X) vertical face: u = horizontal Z, v = height Y from block bottom
+        const horizZ = nx >= 0 ? -pz : pz;
+        u = (horizZ + phaseShift) / 2;
+        v = (py + phaseShift) / 2;
+      }
+
+      uvs[i * 2] = u;
+      uvs[i * 2 + 1] = v;
+    }
+
+    target.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    return target;
   }
 
   private setupLightsAndEnvironment(): void {
@@ -1866,6 +2080,73 @@ export class Viewport3D {
     return `hsl(${hue}, 70%, 42%)`;
   }
 
+  private createBlockDimensionStencilMesh(b: LevelBlock): THREE.Mesh | null {
+    const [w, h, d] = b.size;
+    const isVerticalWall = h > d * 1.4 && w >= 1.5 && h >= 1.0;
+    const isHorizontalPad = w >= 1.6 && d >= 1.2;
+    if (!isVerticalWall && !isHorizontalPad) return null;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+    ctx.beginPath();
+    ctx.roundRect(6, 10, 500, 108, 14);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(248, 250, 252, 0.65)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    const topY = Number((b.position[1] + h / 2).toFixed(2));
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'bold 30px "JetBrains Mono", Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${w}m × ${h}m × ${d}m`, 256, 46);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = '600 22px "JetBrains Mono", Inter, sans-serif';
+    ctx.fillText(`${b.name} · TOP ${topY >= 0 ? '+' : ''}${topY}m`, 256, 88);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.anisotropy = 4;
+    tex.needsUpdate = true;
+
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      clippingPlanes: this.store.doc.sectionPlane.clip3D ? [this.clippingPlane] : [],
+    });
+
+    if (isVerticalWall && b.type !== 'ramp' && b.type !== 'stairs') {
+      const decalW = Math.min(w * 0.75, Math.max(1.4, Math.min(3.6, h * 1.6)));
+      const decalH = decalW * 0.25;
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(decalW, decalH), mat);
+      plane.position.set(0, 0, d / 2 + 0.012);
+      return plane;
+    }
+
+    const spanW = Math.min(w * 0.78, d * 1.8, 3.8);
+    const decalW = Math.max(1.2, spanW);
+    const decalH = Math.min(d * 0.75, decalW * 0.25);
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(decalW, decalH), mat);
+    if (b.type === 'ramp') {
+      const slopeAngle = Math.atan2(h, d);
+      plane.rotation.x = -Math.PI / 2 + slopeAngle;
+      plane.position.set(0, 0.015, 0);
+    } else {
+      plane.rotation.x = -Math.PI / 2;
+      plane.position.set(0, h / 2 + 0.012, 0);
+    }
+    return plane;
+  }
+
   private buildMeshForBlock(b: LevelBlock): THREE.Object3D {
     const meta = ROLE_META[b.role] || ROLE_META.walkable;
     const isSelected = this.store.selection?.kind === 'block' && this.store.selection.id === b.id;
@@ -1875,27 +2156,11 @@ export class Viewport3D {
       this.store.overlays.elevationHeatmap ? this.elevationToHeatColor(topY) : b.color || meta.color
     );
 
-    // 同尺寸体块共用一张网格贴图（只是 repeat 不同的克隆），不再每次重建都新建
-    const repX = Math.max(1, b.size[0] / 2);
-    const repZ = Math.max(1, b.size[2] / 2);
-    const texKey = `${repX}|${repZ}`;
-    let tex = this.gridTexCache.get(texKey);
-    if (!tex) {
-      if (this.gridTexCache.size > 256) {
-        for (const old of this.gridTexCache.values()) old.dispose();
-        this.gridTexCache.clear();
-      }
-      tex = this.gridTexture.clone();
-      tex.needsUpdate = true;
-      tex.repeat.set(repX, repZ);
-      this.gridTexCache.set(texKey, tex);
-    }
-
     const mat = new THREE.MeshStandardMaterial({
       color: baseColor,
-      map: isTrigger ? null : tex,
-      roughness: 0.72,
-      metalness: 0.12,
+      map: isTrigger ? null : this.gridTexture,
+      roughness: 0.68,
+      metalness: 0.1,
       transparent: isTrigger,
       opacity: isTrigger ? 0.35 : 1.0,
       clippingPlanes: this.store.doc.sectionPlane.clip3D ? [this.clippingPlane] : [],
@@ -1904,15 +2169,26 @@ export class Viewport3D {
     const group = new THREE.Group();
     group.userData = { blockId: b.id };
 
-    const addPart = (geo: THREE.BufferGeometry, offset: Vec3 = [0, 0, 0]) => {
-      const mesh = new THREE.Mesh(geo, mat);
+    const [w, h, d] = b.size;
+    const cylRad = b.type === 'cylinder' ? (w + d) / 4 : 0;
+
+    const addPart = (rawGeo: THREE.BufferGeometry, offset: Vec3 = [0, 0, 0]) => {
+      const edgeGeo = new THREE.EdgesGeometry(rawGeo, 20);
+      const uvGeo = isTrigger
+        ? rawGeo
+        : this.applyMetricTriplanarUVs(rawGeo, offset, -h / 2, cylRad);
+      if (uvGeo !== rawGeo) {
+        rawGeo.dispose();
+      }
+
+      const mesh = new THREE.Mesh(uvGeo, mat);
       mesh.position.set(offset[0], offset[1], offset[2]);
       mesh.castShadow = !isTrigger;
       mesh.receiveShadow = true;
       group.add(mesh);
 
       const edges = new THREE.LineSegments(
-        new THREE.EdgesGeometry(geo),
+        edgeGeo,
         new THREE.LineBasicMaterial({
           color: isSelected ? 0x38bdf8 : 0x0f172a,
           linewidth: 1,
@@ -1922,7 +2198,6 @@ export class Viewport3D {
       group.add(edges);
     };
 
-    const [w, h, d] = b.size;
     if (b.type === 'box') {
       addPart(new THREE.BoxGeometry(w, h, d));
     } else if (b.type === 'cylinder') {
@@ -1960,6 +2235,11 @@ export class Viewport3D {
       addPart(new THREE.BoxGeometry(pillarW, pillarH, d), [-w / 2 + pillarW / 2, -lintelH / 2, 0]);
       addPart(new THREE.BoxGeometry(pillarW, pillarH, d), [w / 2 - pillarW / 2, -lintelH / 2, 0]);
       addPart(new THREE.BoxGeometry(w, lintelH, d), [0, h / 2 - lintelH / 2, 0]);
+    }
+
+    if (!isTrigger && (this.store.overlays.showDimensions || isSelected) && b.type !== 'stairs' && b.type !== 'arch') {
+      const stencil = this.createBlockDimensionStencilMesh(b);
+      if (stencil) group.add(stencil);
     }
 
     group.position.set(b.position[0], b.position[1], b.position[2]);
@@ -2004,14 +2284,21 @@ export class Viewport3D {
     return group;
   }
 
-  /** 释放一个对象及其所有子对象的几何体与材质（贴图来自共享缓存，不在这里释放） */
+  /** 释放一个对象及其所有子对象的几何体、材质与独有贴图（共享白盒网格贴图不在这里释放） */
   private disposeObjectTree(root: THREE.Object3D): void {
+    const disposeMat = (m: THREE.Material) => {
+      const anyMat = m as THREE.MeshBasicMaterial & { map?: THREE.Texture | null };
+      if (anyMat.map && anyMat.map !== this.gridTexture) {
+        anyMat.map.dispose();
+      }
+      m.dispose();
+    };
     root.traverse((obj) => {
       const o = obj as THREE.Mesh;
       if (o.geometry) o.geometry.dispose();
       const mat = o.material as THREE.Material | THREE.Material[] | undefined;
-      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-      else if (mat) mat.dispose();
+      if (Array.isArray(mat)) mat.forEach(disposeMat);
+      else if (mat) disposeMat(mat);
     });
   }
 
@@ -2035,6 +2322,7 @@ export class Viewport3D {
     const selectedId = sel?.kind === 'block' ? sel.id : '';
     const clip = this.store.doc.sectionPlane.clip3D ? '|clip' : '';
     const heat = this.store.overlays.elevationHeatmap ? '|heat' : '';
+    const dim = this.store.overlays.showDimensions ? '|dim' : '';
     const liveSlots = new Set<string>();
     const createdNow: THREE.Object3D[] = [];
 
@@ -2043,7 +2331,7 @@ export class Viewport3D {
       // 旧存档里可能有重复 id：重复者用带序号的槽位，保证每个体块都有自己的网格
       const slot = liveSlots.has(b.id) ? `${b.id}#${liveSlots.size}` : b.id;
       liveSlots.add(slot);
-      const key = `${JSON.stringify(b)}${b.id === selectedId ? '|sel' : ''}${clip}${heat}|${ROLE_META[b.role]?.color ?? ''}`;
+      const key = `${JSON.stringify(b)}${b.id === selectedId ? '|sel' : ''}${clip}${heat}${dim}|${ROLE_META[b.role]?.color ?? ''}`;
       const existing = this.meshMap.get(slot);
       if (existing && this.blockMeshKeys.get(slot) === key) continue;
       if (existing) {
