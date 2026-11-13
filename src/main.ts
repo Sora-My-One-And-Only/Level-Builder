@@ -13,7 +13,7 @@ import {
   resolveTriggerLinks,
   ROLE_META,
 } from './core/geometry-analysis';
-import { getLang, LangCode, setLang, t } from './core/i18n';
+import { getLang, LangCode, poiLabel, roleLabel, setLang, t } from './core/i18n';
 import {
   createEmptyLevel,
   createStarterLevel,
@@ -340,10 +340,10 @@ function renderFocusStrip(): void {
     <button class="focus-btn ${selOn('scale')}" data-focus-act="scale" title="缩放 (R)">⤢</button>
     <button class="focus-btn ${tool === 'draw_box' ? 'active' : ''}" data-focus-act="draw_box" title="绘制体块 (B)">▣</button>
     <span class="focus-sep"></span>
-    <button class="focus-btn" data-focus-act="undo" title="撤销 (Ctrl+Z)">↶</button>
-    <button class="focus-btn" data-focus-act="redo" title="重做 (Ctrl+Y)">↷</button>
+    <button class="focus-btn" data-focus-act="undo" title="${t('undo')} (Ctrl+Z)">↶</button>
+    <button class="focus-btn" data-focus-act="redo" title="${t('redo')} (Ctrl+Y)">↷</button>
     <span class="focus-sep"></span>
-    <button class="focus-btn focus-exit" data-focus-act="exit" title="退出专注模式 (\\)">退出专注 <kbd>\\</kbd></button>
+    <button class="focus-btn focus-exit" data-focus-act="exit" title="${t('focusModeTip')}">${t('exitFocusBtn')} <kbd>\\</kbd></button>
   `;
 }
 
@@ -653,11 +653,8 @@ function enhanceCollapsibleCards(container: HTMLElement): void {
     const titleEl = card.querySelector<HTMLElement>('.card-title');
     if (!titleEl) return;
 
-    const rawText = (titleEl.querySelector('span')?.textContent || titleEl.textContent || `card_${idx}`)
-      .replace(/\([^)]*\)/g, '')
-      .trim();
-    // The key is derived from the pristine title text; on later (binding) passes reuse it
-    const cardKey = card.dataset.cardKey || `${activeSidebarTab}:${rawText}`;
+    // Use a stable language-independent key so switching languages preserves DOM morphing & collapse state
+    const cardKey = card.dataset.cardKey || `${activeSidebarTab}:card_${idx}`;
     card.dataset.cardKey = cardKey;
 
     // Wrap all siblings after .card-title into .card-body if not already wrapped
@@ -778,17 +775,18 @@ function getCommands(): AppCommand[] {
     setLang(code);
     renderAllUI();
   };
+  const curLang = getLang();
   const cmds: AppCommand[] = [
-    { id: 'new-starter', group: '新建场景', menu: true, label: `📐 ${t('newSceneEmpty')}`, run: () => store.setDocument(createStarterLevel(), true, true) },
-    { id: 'new-zero', group: '新建场景', menu: true, label: `📄 ${t('newSceneZero')}`, run: () => store.setDocument(createEmptyLevel(), true, true) },
+    { id: 'new-starter', group: t('grpNew'), menu: true, label: `📐 ${t('newSceneEmpty')}`, run: () => store.setDocument(createStarterLevel(), true, true) },
+    { id: 'new-zero', group: t('grpNew'), menu: true, label: `📄 ${t('newSceneZero')}`, run: () => store.setDocument(createEmptyLevel(), true, true) },
 
-    { id: 'tpl-courtyard', group: '示范关卡', menu: true, label: t('tplCourtyard'), run: () => store.setDocument(createTacticalCourtyardLevel(), true, true) },
-    { id: 'tpl-ruins', group: '示范关卡', menu: true, label: t('tplRuins'), run: () => store.setDocument(createVerticalRuinsLevel(), true, true) },
+    { id: 'tpl-courtyard', group: t('grpSamples'), menu: true, label: t('tplCourtyard'), run: () => store.setDocument(createTacticalCourtyardLevel(), true, true) },
+    { id: 'tpl-ruins', group: t('grpSamples'), menu: true, label: t('tplRuins'), run: () => store.setDocument(createVerticalRuinsLevel(), true, true) },
     {
       id: 'tpl-library',
-      group: '示范关卡',
+      group: t('grpSamples'),
       menu: true,
-      label: '🏗️ 房间模板库…',
+      label: t('roomTplLibCmd'),
       run: () => {
         setWorkspaceMode('build');
         activeSidebarTab = 'ai';
@@ -799,27 +797,27 @@ function getCommands(): AppCommand[] {
       },
     },
 
-    { id: 'import-json', group: '导入 / 导出', menu: true, label: t('importJSON'), run: () => fileInput.click() },
-    { id: 'export-json', group: '导入 / 导出', menu: true, label: t('exportJSON'), run: () => exportLevelJSON(store.doc) },
-    { id: 'export-md', group: '导入 / 导出', menu: true, label: t('exportMD'), run: () => exportDesignDocMarkdown(store.doc) },
-    { id: 'export-svg', group: '导入 / 导出', menu: true, label: t('exportSVG'), run: () => exportBlueprintSVG(store.doc) },
-    { id: 'export-glb', group: '导入 / 导出', menu: true, label: t('exportGLB'), run: () => exportLevelGLB(vp3D.scene, store.doc) },
-    { id: 'export-obj', group: '导入 / 导出', menu: true, label: t('exportOBJ'), run: () => exportLevelOBJ(store.doc) },
-    { id: 'export-unity', group: '导入 / 导出', menu: true, label: t('exportUnity'), run: () => exportUnityCS(store.doc) },
+    { id: 'import-json', group: t('grpImportExport'), menu: true, label: t('importJSON'), run: () => fileInput.click() },
+    { id: 'export-json', group: t('grpImportExport'), menu: true, label: t('exportJSON'), run: () => exportLevelJSON(store.doc) },
+    { id: 'export-md', group: t('grpImportExport'), menu: true, label: t('exportMD'), run: () => exportDesignDocMarkdown(store.doc) },
+    { id: 'export-svg', group: t('grpImportExport'), menu: true, label: t('exportSVG'), run: () => exportBlueprintSVG(store.doc) },
+    { id: 'export-glb', group: t('grpImportExport'), menu: true, label: t('exportGLB'), run: () => exportLevelGLB(vp3D.scene, store.doc) },
+    { id: 'export-obj', group: t('grpImportExport'), menu: true, label: t('exportOBJ'), run: () => exportLevelOBJ(store.doc) },
+    { id: 'export-unity', group: t('grpImportExport'), menu: true, label: t('exportUnity'), run: () => exportUnityCS(store.doc) },
 
-    { id: 'theme', group: '界面', menu: true, label: '🎨 主题配色…', run: openThemeStudio },
-    { id: 'shortcuts', group: '界面', menu: true, label: '⌨ 快捷键一览', hint: '?', run: () => setShortcutPanelOpen(true) },
-    { id: 'focus', group: '界面', menu: true, label: '⛶ 专注模式', hint: '\\', run: () => setFocusMode(!isFocusMode) },
-    { id: 'lang-zh', group: '语言 / Language', menu: true, label: '🌐 中文', run: lang('zh') },
-    { id: 'lang-en', group: '语言 / Language', menu: true, label: '🌐 English', run: lang('en') },
-    { id: 'lang-ja', group: '语言 / Language', menu: true, label: '🌐 日本語', run: lang('ja') },
+    { id: 'theme', group: t('grpUI'), menu: true, label: t('themeCmd'), run: openThemeStudio },
+    { id: 'shortcuts', group: t('grpUI'), menu: true, label: t('shortcutsCmd'), hint: '?', run: () => setShortcutPanelOpen(true) },
+    { id: 'focus', group: t('grpUI'), menu: true, label: t('focusCmd'), hint: '\\', run: () => setFocusMode(!isFocusMode) },
+    { id: 'lang-zh', group: t('grpLang'), menu: true, label: '🌐 中文', hint: curLang === 'zh' ? '✓' : undefined, run: lang('zh') },
+    { id: 'lang-en', group: t('grpLang'), menu: true, label: '🌐 English', hint: curLang === 'en' ? '✓' : undefined, run: lang('en') },
+    { id: 'lang-ja', group: t('grpLang'), menu: true, label: '🌐 日本語', hint: curLang === 'ja' ? '✓' : undefined, run: lang('ja') },
 
-    { id: 'ws-build', group: '工作区', label: t('wsBuild'), hint: '1', run: () => setWorkspaceMode('build') },
-    { id: 'ws-analyze', group: '工作区', label: t('wsAnalyze'), hint: '2', run: () => setWorkspaceMode('analyze') },
-    { id: 'playtest', group: '工作区', label: store.isPlaytesting ? t('playtestStop') : t('playtestStart'), hint: 'Tab', run: () => (store.isPlaytesting ? vp3D.stopPlaytest() : vp3D.startPlaytest()) },
+    { id: 'ws-build', group: t('grpWorkspace'), label: t('wsBuild'), hint: '1', run: () => setWorkspaceMode('build') },
+    { id: 'ws-analyze', group: t('grpWorkspace'), label: t('wsAnalyze'), hint: '2', run: () => setWorkspaceMode('analyze') },
+    { id: 'playtest', group: t('grpWorkspace'), label: store.isPlaytesting ? t('playtestStop') : t('playtestStart'), hint: 'Tab', run: () => (store.isPlaytesting ? vp3D.stopPlaytest() : vp3D.startPlaytest()) },
     {
       id: 'sim-patrol',
-      group: '工作区',
+      group: t('grpWorkspace'),
       label: store.isSimulatingEnemies ? t('simPatrolStop') : t('simPatrolStart'),
       run: () => {
         store.isSimulatingEnemies = !store.isSimulatingEnemies;
@@ -827,32 +825,32 @@ function getCommands(): AppCommand[] {
       },
     },
 
-    { id: 'layout-split', group: '视口布局', label: t('layoutSplit'), run: setLayout('split_3d_2d') },
-    { id: 'layout-3d', group: '视口布局', label: t('layout3D'), run: setLayout('only_3d') },
-    { id: 'layout-top', group: '视口布局', label: t('layoutTop'), run: setLayout('only_top') },
-    { id: 'layout-sec', group: '视口布局', label: t('layoutSec'), run: setLayout('only_section') },
+    { id: 'layout-split', group: t('grpLayout'), label: t('layoutSplit'), run: setLayout('split_3d_2d') },
+    { id: 'layout-3d', group: t('grpLayout'), label: t('layout3D'), run: setLayout('only_3d') },
+    { id: 'layout-top', group: t('grpLayout'), label: t('layoutTop'), run: setLayout('only_top') },
+    { id: 'layout-sec', group: t('grpLayout'), label: t('layoutSec'), run: setLayout('only_section') },
 
-    { id: 'undo', group: '编辑', label: t('undo'), hint: 'Ctrl Z', run: () => store.undo() },
-    { id: 'redo', group: '编辑', label: t('redo'), hint: 'Ctrl Y', run: () => store.redo() },
-    { id: 'frame', group: '编辑', label: t('btnFrameSel'), hint: 'F', run: () => store.requestFrameSelected() },
+    { id: 'undo', group: t('grpEdit'), label: t('undo'), hint: 'Ctrl Z', run: () => store.undo() },
+    { id: 'redo', group: t('grpEdit'), label: t('redo'), hint: 'Ctrl Y', run: () => store.redo() },
+    { id: 'frame', group: t('grpEdit'), label: t('btnFrameSel'), hint: 'F', run: () => store.requestFrameSelected() },
 
-    { id: 'tool-select', group: '工具', label: t('toolSelect'), hint: 'Q', run: setTool('select') },
-    { id: 'tool-box', group: '工具', label: t('toolBox'), hint: 'B', run: setTool('draw_box') },
-    { id: 'tool-ramp', group: '工具', label: t('toolRamp'), run: setTool('draw_ramp') },
-    { id: 'tool-stairs', group: '工具', label: t('toolStairs'), run: setTool('draw_stairs') },
-    { id: 'tool-arch', group: '工具', label: t('toolArch'), run: setTool('draw_arch') },
-    { id: 'tool-cylinder', group: '工具', label: t('toolCylinder'), run: setTool('draw_cylinder') },
-    { id: 'tool-section', group: '工具', label: t('toolSection'), run: setTool('edit_section') },
-    { id: 'tool-jump', group: '工具', label: t('toolJump'), run: setTool('measure_jump') },
-    { id: 'tool-ruler', group: '工具', label: t('toolRuler'), run: setTool('measure_ruler') },
-    { id: 'tool-poi', group: '工具', label: t('toolPOI'), run: setTool('place_poi') },
-    { id: 'tool-path', group: '工具', label: t('toolPath'), run: setTool('draw_path') },
+    { id: 'tool-select', group: t('grpTools'), label: t('toolSelect'), hint: 'Q', run: setTool('select') },
+    { id: 'tool-box', group: t('grpTools'), label: t('toolBox'), hint: 'B', run: setTool('draw_box') },
+    { id: 'tool-ramp', group: t('grpTools'), label: t('toolRamp'), run: setTool('draw_ramp') },
+    { id: 'tool-stairs', group: t('grpTools'), label: t('toolStairs'), run: setTool('draw_stairs') },
+    { id: 'tool-arch', group: t('grpTools'), label: t('toolArch'), run: setTool('draw_arch') },
+    { id: 'tool-cylinder', group: t('grpTools'), label: t('toolCylinder'), run: setTool('draw_cylinder') },
+    { id: 'tool-section', group: t('grpTools'), label: t('toolSection'), run: setTool('edit_section') },
+    { id: 'tool-jump', group: t('grpTools'), label: t('toolJump'), run: setTool('measure_jump') },
+    { id: 'tool-ruler', group: t('grpTools'), label: t('toolRuler'), run: setTool('measure_ruler') },
+    { id: 'tool-poi', group: t('grpTools'), label: t('toolPOI'), run: setTool('place_poi') },
+    { id: 'tool-path', group: t('grpTools'), label: t('toolPath'), run: setTool('draw_path') },
   ];
   for (const r of ROOM_TEMPLATES) {
     cmds.push({
       id: `room-${r.id}`,
-      group: '房间模板',
-      label: `${r.icon} ${r.nameZh}`,
+      group: t('grpRooms'),
+      label: `${r.icon} ${curLang === 'en' ? r.nameEn : r.nameZh}`,
       run: () => store.setDocument(createSceneFromRoomTemplate(r.id), true, true),
     });
   }
@@ -934,7 +932,7 @@ function renderCommandResults(): void {
   });
   cmdActiveIndex = Math.min(cmdActiveIndex, Math.max(0, cmdResults.length - 1));
   if (!cmdResults.length) {
-    list.innerHTML = '<div class="cmd-empty">没有匹配的操作</div>';
+    list.innerHTML = `<div class="cmd-empty">${t('cmdEmpty')}</div>`;
     return;
   }
   let idx = 0;
@@ -1014,19 +1012,19 @@ function renderTopBarNow(): void {
 
   patchTarget(topbar).html = `
     <div class="brand-group">
-      <button id="btn-toggle-left-dock" class="btn btn-icon" title="折叠/展开左侧工具栏">
-        ${isLeftDockCollapsed ? '▶ 工具' : '◀'}
+      <button id="btn-toggle-left-dock" class="btn btn-icon" title="${t('dockToggleTip')}">
+        ${isLeftDockCollapsed ? t('dockExpandBtn') : '◀'}
       </button>
-      <button id="btn-app-menu" class="btn" title="菜单：新建 / 模板 / 导入导出 / 主题 / 语言">${iconLabel('☰ 菜单')}</button>
+      <button id="btn-app-menu" class="btn" title="${t('menuTip')}">${iconLabel(t('menuBtn'))}</button>
       <div class="brand-logo">
         <span class="brand-badge">LB</span>
         <span>Level Builder</span>
       </div>
-      <input id="level-name-input" class="level-title-input" type="text" value="${store.doc.metadata.name}" title="关卡名称" />
+      <input id="level-name-input" class="level-title-input" type="text" value="${store.doc.metadata.name}" title="${t('lblName')}" />
       <span class="topbar-sep"></span>
 
       <!-- 3D / 2D 横版 / 2D 俯视 游戏关卡模式切换器 -->
-      <div class="dim-mode-bar" title="切换 3D立体关卡 / 2D横版卷轴(平台跳跃/银河城) / 2D俯视角(塞尔达/肉鸽)">
+      <div class="dim-mode-bar" title="3D / 2D Side / 2D Top-Down">
         <button class="dim-mode-btn ${dim === '3d' ? 'active' : ''}" data-dim="3d" title="${t('dim3D')}">${iconLabel(t('dim3D'))}</button>
         <button class="dim-mode-btn ${dim === '2d_side' ? 'active' : ''}" data-dim="2d_side" title="${t('dim2DSide')}">${iconLabel(t('dim2DSide'))}</button>
         <button class="dim-mode-btn ${dim === '2d_topdown' ? 'active' : ''}" data-dim="2d_topdown" title="${t('dim2DTop')}">${iconLabel(t('dim2DTop'))}</button>
@@ -1034,16 +1032,16 @@ function renderTopBarNow(): void {
 
       <select id="template-select" class="select-pill" title="${t('templatePlaceholder')}">
         <option value="">${t('templatePlaceholder')}</option>
-        <optgroup label="⭐ 完整综合示范关卡">
+        <optgroup label="${t('tplGroupFull')}">
           <option value="courtyard">${t('tplCourtyard')}</option>
           <option value="ruins">${t('tplRuins')}</option>
           <option value="starter">${t('tplStarter')}</option>
         </optgroup>
         ${ROOM_CATEGORIES.map(
           (cat) => `
-          <optgroup label="${cat.icon} ${cat.nameZh}">
+          <optgroup label="${cat.icon} ${lang === 'en' ? cat.nameEn : cat.nameZh}">
             ${ROOM_TEMPLATES.filter((r) => r.categoryId === cat.id)
-              .map((r) => `<option value="room:${r.id}">${r.icon} ${r.nameZh}</option>`)
+              .map((r) => `<option value="room:${r.id}">${r.icon} ${lang === 'en' ? r.nameEn : r.nameZh}</option>`)
               .join('')}
           </optgroup>
         `
@@ -1052,11 +1050,11 @@ function renderTopBarNow(): void {
     </div>
 
     <div class="topbar-center">
-      <div class="dim-mode-bar workspace-switch" title="工作区预设：切换搭建/分析重心，无损保留全部页签与工具">
+      <div class="dim-mode-bar workspace-switch" title="${t('grpWorkspace')}">
         <button class="dim-mode-btn ${workspaceMode === 'build' ? 'active' : ''}" data-ws="build" title="${t('wsBuildTip')}">${iconLabel(t('wsBuild'))}</button>
         <button class="dim-mode-btn ${workspaceMode === 'analyze' ? 'active' : ''}" data-ws="analyze" title="${t('wsAnalyzeTip')}">${iconLabel(t('wsAnalyze'))}</button>
       </div>
-      <select id="layout-select" class="select-pill" title="视口布局">
+      <select id="layout-select" class="select-pill" title="${t('grpLayout')}">
         <option value="split_3d_2d" ${store.layout === 'split_3d_2d' ? 'selected' : ''}>${t('layoutSplit')}</option>
         <option value="only_3d" ${store.layout === 'only_3d' ? 'selected' : ''}>${t('layout3D')}</option>
         <option value="only_top" ${store.layout === 'only_top' ? 'selected' : ''}>${t('layoutTop')}</option>
@@ -1074,20 +1072,26 @@ function renderTopBarNow(): void {
     </div>
 
     <div class="topbar-right">
-      <button id="btn-open-theme-studio" class="btn ${isThemeStudioOpen ? 'active' : ''}" title="主题配色：切换界面颜色模板与自定义色板">
-        ${iconLabel('🎨 主题')}
+      <button id="btn-open-theme-studio" class="btn ${isThemeStudioOpen ? 'active' : ''}" title="${t('themeTip')}">
+        ${iconLabel(t('themeBtn'))}
       </button>
-      <button id="btn-cmd-palette" class="btn" title="命令面板：搜索任何操作 (Ctrl+K)">${iconLabel('🔍 搜索')}<kbd class="kbd-hint">Ctrl K</kbd></button>
+      <button id="btn-cmd-palette" class="btn" title="${t('searchTip')}">${iconLabel(t('searchBtn'))}<kbd class="kbd-hint">Ctrl K</kbd></button>
 
-      <div id="bridge-status" class="bridge-pill ${store.bridgeConnected || store.isOnlineStaticHost() ? '' : 'offline'}" title="${store.bridgeConnected ? t('bridgeOnline') : store.isOnlineStaticHost() ? '在线版' : t('bridgeOffline')}">
+      <select id="lang-select" class="select-pill" title="Language / 语言 / 言語">
+        <option value="zh" ${lang === 'zh' ? 'selected' : ''}>🌐 中文</option>
+        <option value="en" ${lang === 'en' ? 'selected' : ''}>🌐 EN</option>
+        <option value="ja" ${lang === 'ja' ? 'selected' : ''}>🌐 日本語</option>
+      </select>
+
+      <div id="bridge-status" class="bridge-pill ${store.bridgeConnected || store.isOnlineStaticHost() ? '' : 'offline'}" title="${store.bridgeConnected ? t('bridgeOnline') : store.isOnlineStaticHost() ? t('onlineMode') : t('bridgeOffline')}">
         <span class="dot"></span>
-        <span id="bridge-text">${store.bridgeConnected ? t('bridgeOnline') : store.isOnlineStaticHost() ? '🌐 在线版' : t('bridgeOffline')}</span>
+        <span id="bridge-text">${store.bridgeConnected ? t('bridgeOnline') : store.isOnlineStaticHost() ? t('onlineMode') : t('bridgeOffline')}</span>
       </div>
 
       <button id="btn-focus-mode" class="btn btn-icon" title="${t('focusModeTip')}">⛶</button>
 
-      <button id="btn-toggle-right-sidebar" class="btn btn-icon" title="折叠/展开右侧属性分析栏">
-        ${isRightSidebarCollapsed ? '◀ 属性' : '▶'}
+      <button id="btn-toggle-right-sidebar" class="btn btn-icon" title="${t('sidebarToggleTip')}">
+        ${isRightSidebarCollapsed ? t('sidebarExpandBtn') : '▶'}
       </button>
     </div>
   `;
@@ -1171,6 +1175,14 @@ function renderTopBarNow(): void {
   };
   document.getElementById('btn-cmd-palette')!.onclick = () => setCommandPaletteOpen(true);
 
+  const langSel = document.getElementById('lang-select') as HTMLSelectElement | null;
+  if (langSel) {
+    langSel.onchange = () => {
+      setLang(langSel.value as LangCode);
+      renderAllUI();
+    };
+  }
+
   document.getElementById('layout-select')!.onchange = (e) => {
     store.layout = (e.target as HTMLSelectElement).value as ViewportLayout;
     modeLayouts[workspaceMode] = store.layout;
@@ -1209,7 +1221,23 @@ function renderTopBarNow(): void {
   document.getElementById('btn-reset-sec')!.textContent = t('vpResetCam');
   document.getElementById('status-right')!.textContent = t('statusShortcuts');
   document.getElementById('status-right')!.title = t('statusShortcuts');
-  fitTopBar();
+  const shortcutsBtn = document.getElementById('btn-shortcuts');
+  if (shortcutsBtn) {
+    shortcutsBtn.textContent = t('shortcutsBtn');
+    shortcutsBtn.title = `${t('shortcutsCmd')} (?)`;
+  }
+  const sbHint = document.querySelector<HTMLElement>('#sidebar-toolbar .sidebar-toolbar-hint');
+  if (sbHint) {
+    sbHint.textContent = t('cardCollapseHint');
+    sbHint.title = t('cardCollapseHint');
+  }
+  const btnExpandAll = document.getElementById('btn-expand-all-cards');
+  if (btnExpandAll) btnExpandAll.textContent = t('expandAllBtn');
+  const btnCollapseAll = document.getElementById('btn-collapse-all-cards');
+  if (btnCollapseAll) btnCollapseAll.textContent = t('collapseAllBtn');
+  const cmdInput = document.getElementById('cmd-input') as HTMLInputElement | null;
+  if (cmdInput) cmdInput.placeholder = t('cmdPlaceholder');
+  fitTopBar(true);
 }
 
 const TOPBAR_MAX_COMPACT = 4;
@@ -1366,9 +1394,9 @@ function renderLeftDockNow(): void {
             .map((roleKey) => {
               const m = ROLE_META[roleKey];
               return `
-                <button class="role-chip ${cd.role === roleKey ? 'active' : ''}" data-role="${roleKey}">
+                <button class="role-chip ${cd.role === roleKey ? 'active' : ''}" data-role="${roleKey}" title="${roleLabel(roleKey, false)}">
                   <span class="color-swatch" style="background:${m.color}"></span>
-                  <span>${m.label.split(' ')[0]}</span>
+                  <span>${roleLabel(roleKey, true)}</span>
                 </button>
               `;
             })
@@ -1377,11 +1405,11 @@ function renderLeftDockNow(): void {
 
         <!-- Custom Block Creation Color Override -->
         <div class="dock-title" style="margin-top:4px;display:flex;justify-content:space-between;align-items:center;">
-          <span>🎨 白盒自定义颜色</span>
+          <span>${t('customColorTitle')}</span>
           ${
             cd.customColor
-              ? `<button class="chip-toggle" id="dock-clear-color" style="padding:1px 5px;font-size:9px;">恢复语义色</button>`
-              : `<span style="font-size:9px;color:var(--text-muted);">跟随语义</span>`
+              ? `<button class="chip-toggle" id="dock-clear-color" style="padding:1px 5px;font-size:9px;">${t('resetRoleColor')}</button>`
+              : `<span style="font-size:9px;color:var(--text-muted);">${t('followRoleColor')}</span>`
           }
         </div>
         <div class="swatch-row">
@@ -1430,7 +1458,7 @@ function renderLeftDockNow(): void {
               ${(Object.keys(POI_META) as POICategory[])
                 .map(
                   (k) =>
-                    `<option value="${k}" ${vpTop.activePOICategory === k ? 'selected' : ''}>${POI_META[k].icon} ${POI_META[k].label}</option>`
+                    `<option value="${k}" ${vpTop.activePOICategory === k ? 'selected' : ''}>${POI_META[k].icon} ${poiLabel(k)}</option>`
                 )
                 .join('')}
             </select>
@@ -1737,8 +1765,8 @@ function renderFloatingNoteCard(): void {
     ? blk.color || (ROLE_META[blk.role] || ROLE_META.walkable).color
     : (POI_META[poi!.category] || POI_META.objective).color;
   const badgeText = blk
-    ? (ROLE_META[blk.role] || ROLE_META.walkable).label.split(' ')[0]
-    : `${(POI_META[poi!.category] || POI_META.objective).icon} ${(POI_META[poi!.category] || POI_META.objective).label.split(' ')[0]}`;
+    ? roleLabel(blk.role, true)
+    : `${(POI_META[poi!.category] || POI_META.objective).icon} ${poiLabel(poi!.category)}`;
   const subMeta = blk ? `(${blk.size.join('×')}m · ${blk.floor}F)` : `(${poi!.position.map((v) => v.toFixed(1)).join(', ')})`;
   const linkedTarget = obj.linkedId ? allTargets.find((tItem) => tItem.id === obj.linkedId) : null;
 
@@ -1965,7 +1993,7 @@ function renderInspectorTab(container: HTMLElement): void {
             ${(Object.keys(ROLE_META) as BlockRole[])
               .map(
                 (r) =>
-                  `<option value="${r}" ${blk.role === r ? 'selected' : ''}>${ROLE_META[r].label}</option>`
+                  `<option value="${r}" ${blk.role === r ? 'selected' : ''}>${roleLabel(r, false)}</option>`
               )
               .join('')}
           </select>
@@ -2006,14 +2034,14 @@ function renderInspectorTab(container: HTMLElement): void {
             : ''
         }
         <div class="form-row">
-          <label>🎨 专属颜色</label>
+          <label>${t('lblColor')}</label>
           <div style="display:flex;flex-direction:column;gap:5px;">
             <div style="display:flex;align-items:center;gap:6px;">
               <input type="color" id="ins-blk-color" class="color-picker-input" value="${blk.color || ROLE_META[blk.role].color}" />
-              <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);">${blk.color || '默认语义色'}</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);">${blk.color || t('defaultRoleColor')}</span>
               ${
                 blk.color
-                  ? `<button class="chip-toggle" id="ins-blk-color-reset" style="margin-left:auto;">恢复默认</button>`
+                  ? `<button class="chip-toggle" id="ins-blk-color-reset" style="margin-left:auto;">${t('resetDefaultBtn')}</button>`
                   : ''
               }
             </div>
@@ -2083,7 +2111,7 @@ function renderInspectorTab(container: HTMLElement): void {
             ${(Object.keys(POI_META) as POICategory[])
               .map(
                 (k) =>
-                  `<option value="${k}" ${poi.category === k ? 'selected' : ''}>${POI_META[k].icon} ${POI_META[k].label}</option>`
+                  `<option value="${k}" ${poi.category === k ? 'selected' : ''}>${POI_META[k].icon} ${poiLabel(k)}</option>`
               )
               .join('')}
           </select>
@@ -2288,11 +2316,11 @@ function renderInspectorTab(container: HTMLElement): void {
     <div class="panel-card">
       <div class="card-title">
         <span>${t('sightlineListTitle')} (${sightlines.length})</span>
-        <button class="btn" id="btn-start-ruler-tool" style="padding:2px 7px;font-size:10px;">📏 +拉线绑定</button>
+        <button class="btn" id="btn-start-ruler-tool" style="padding:2px 7px;font-size:10px;">${t('addSightlineBtn')}</button>
       </div>
       ${
         sightlines.length === 0
-          ? `<div style="font-size:10px;color:var(--text-muted);">点击「📏 +拉线绑定」并在 2D 或 3D 视口中从一个 POI/体块拖到另一个物体，即可创建随物体实时移动的 3D 遮挡测距线。</div>`
+          ? `<div style="font-size:10px;color:var(--text-muted);">${t('sightlineEmptyHint')}</div>`
           : sightlines
               .map((s) => {
                 const { from, to, fromLabel, toLabel } = resolveSightlineEndpoints(s, store.doc);
@@ -2926,7 +2954,7 @@ function renderAuditTab(container: HTMLElement): void {
     <!-- Pacing & Intensity Curve Card -->
     <div class="panel-card" style="border-color:rgba(244,63,94,0.45);">
       <div class="card-title">
-        <span>📈 关卡心流与交火烈度曲线 (Pacing Curve)</span>
+        <span>${t('pacingCurveTitle')}</span>
       </div>
       <svg viewBox="0 0 ${svgW} ${svgH}" style="width:100%;height:auto;background:#070b14;border:1px solid var(--border);border-radius:6px;">
         <line x1="${padL}" y1="${padT + plotH * 0.25}" x2="${svgW - padR}" y2="${padT + plotH * 0.25}" stroke="#1e293b" stroke-dasharray="2,2" />
@@ -2955,8 +2983,8 @@ function renderAuditTab(container: HTMLElement): void {
     <!-- Annotated Objects & Design Rationale Summary Table -->
     <div class="panel-card" style="border-color:rgba(250,204,21,0.4);">
       <div class="card-title">
-        <span>📝 全关卡物体设计思路汇总 (${annotatedBlocks.length + annotatedPOIs.length})</span>
-        <button class="btn" id="btn-export-md-doc" style="padding:2px 7px;font-size:10px;color:#fde047;">📄 导出设计文档(.md)</button>
+        <span>${t('notesSummaryTitle')} (${annotatedBlocks.length + annotatedPOIs.length})</span>
+        <button class="btn" id="btn-export-md-doc" style="padding:2px 7px;font-size:10px;color:#fde047;">${t('exportMdShortBtn')}</button>
       </div>
       ${
         annotatedBlocks.length + annotatedPOIs.length === 0
@@ -3067,6 +3095,7 @@ function renderAuditTab(container: HTMLElement): void {
 }
 
 function renderAITab(container: HTMLElement): void {
+  const curLang = getLang();
   const filteredRooms =
     activeRoomCategoryFilter === 'all'
       ? ROOM_TEMPLATES
@@ -3076,20 +3105,20 @@ function renderAITab(container: HTMLElement): void {
     <!-- Categorized Game Room Template Generator -->
     <div class="panel-card" style="border-color:rgba(56,189,248,0.5);">
       <div class="card-title">
-        <span style="color:#38bdf8;">🏗️ 房间模板库 (${ROOM_TEMPLATES.length}套)</span>
+        <span style="color:#38bdf8;">${t('roomLibTitle')} (${ROOM_TEMPLATES.length})</span>
       </div>
       <div style="font-size:10px;color:var(--text-muted);line-height:1.35;">
-        按品类收录经典关卡拓扑（含设计备注、机关联动与相机预设）：
+        ${t('roomLibHint')}
       </div>
 
       <div class="room-category-pills">
         <button class="room-cat-pill ${activeRoomCategoryFilter === 'all' ? 'active' : ''}" data-rcat="all">
-          🌟 全部 (${ROOM_TEMPLATES.length})
+          🌟 ${t('floorAll')} (${ROOM_TEMPLATES.length})
         </button>
         ${ROOM_CATEGORIES.map(
           (cat) => `
-          <button class="room-cat-pill ${activeRoomCategoryFilter === cat.id ? 'active' : ''}" data-rcat="${cat.id}" title="${cat.descZh}">
-            ${cat.icon} ${cat.nameZh.split(' ')[0]}
+          <button class="room-cat-pill ${activeRoomCategoryFilter === cat.id ? 'active' : ''}" data-rcat="${cat.id}" title="${curLang === 'en' ? cat.nameEn : cat.descZh}">
+            ${cat.icon} ${(curLang === 'en' ? cat.nameEn : cat.nameZh).split(' ')[0]}
           </button>
         `
         ).join('')}
@@ -3100,29 +3129,29 @@ function renderAITab(container: HTMLElement): void {
           .map((tpl) => {
             const dimLabel =
               tpl.dimensionMode === '2d_side'
-                ? '🍄 2D横版'
+                ? t('dim2DSide')
                 : tpl.dimensionMode === '2d_topdown'
-                ? '🗡️ 2D俯视'
-                : '🧊 3D';
+                ? t('dim2DTop')
+                : t('dim3D');
             return `
               <div class="room-template-card">
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;">
-                  <span style="font-weight:700;font-size:11.5px;color:#f8fafc;">${tpl.icon} ${tpl.nameZh}</span>
+                  <span style="font-weight:700;font-size:11.5px;color:#f8fafc;">${tpl.icon} ${curLang === 'en' ? tpl.nameEn : tpl.nameZh}</span>
                   <span style="font-size:9.5px;padding:1px 6px;border-radius:4px;background:rgba(56,189,248,0.18);color:#38bdf8;white-space:nowrap;">${dimLabel} · ${tpl.sizeLabel}</span>
                 </div>
                 <div style="font-size:10px;color:#cbd5e1;">${tpl.summaryZh}</div>
                 <details style="font-size:10px;color:#94a3b8;">
-                  <summary style="cursor:pointer;color:#38bdf8;user-select:none;">💡 设计原理</summary>
+                  <summary style="cursor:pointer;color:#38bdf8;user-select:none;">💡 ${curLang === 'en' ? 'Design Rationale' : '设计原理'}</summary>
                   <div style="margin-top:4px;color:#cbd5e1;line-height:1.4;background:var(--bg-0);padding:5px 6px;border-radius:4px;border-left:2px solid var(--accent);">
                     ${tpl.designTheoryZh}
                   </div>
                 </details>
                 <div class="room-template-actions">
                   <button class="btn btn-primary" data-room-append="${tpl.id}" style="justify-content:center;font-size:10px;">
-                    ➕ 拼接到当前关卡
+                    ${t('roomAppendBtn')}
                   </button>
                   <button class="btn" data-room-load="${tpl.id}" style="justify-content:center;font-size:10px;">
-                    📂 设为新场景
+                    ${t('roomLoadBtn')}
                   </button>
                 </div>
               </div>
@@ -3134,14 +3163,14 @@ function renderAITab(container: HTMLElement): void {
 
     <!-- Expanded Procedural Macros -->
     <div class="panel-card">
-      <div class="card-title"><span>⚡ AI Procedural Macros (快速程序化白盒宏)</span></div>
+      <div class="card-title"><span>${t('aiMacrosTitle')}</span></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
-        <button class="btn" id="macro-room">🏠 生成围合房间</button>
-        <button class="btn" id="macro-cover">🛡️ 自动布置掩体群</button>
-        <button class="btn" id="macro-mirror-x">🪞 左右对称镜像 (X)</button>
-        <button class="btn" id="macro-mirror-z">🪞 前后对称镜像 (Z)</button>
-        <button class="btn" id="macro-sniper">🎯 添加制高狙击点</button>
-        <button class="btn" id="macro-stairs">🪜 生成二层登高阶梯</button>
+        <button class="btn" id="macro-room">${t('macroRoom')}</button>
+        <button class="btn" id="macro-cover">${t('macroCover')}</button>
+        <button class="btn" id="macro-mirror-x">${t('macroMirrorX')}</button>
+        <button class="btn" id="macro-mirror-z">${t('macroMirrorZ')}</button>
+        <button class="btn" id="macro-sniper">${t('macroSniper')}</button>
+        <button class="btn" id="macro-stairs">${t('macroStairs')}</button>
       </div>
     </div>
 
@@ -3318,8 +3347,8 @@ function renderThemeStudio(): void {
   const presetCount = Object.keys(THEME_PRESETS).length;
   patchTarget(panel).html = `
     <div class="card-title" style="font-size:13px;cursor:default;">
-      <span>🎨 界面主题模板与自定义颜色工作台</span>
-      <button class="btn" id="btn-close-theme-studio">✕ 关闭</button>
+      <span>${t('themeStudioTitle')}</span>
+      <button class="btn" id="btn-close-theme-studio">${t('closeBtn')}</button>
     </div>
 
     <div class="dock-title">1. 常规界面颜色模板 (${presetCount}套工业级与设计师预设)</div>
@@ -3389,7 +3418,7 @@ function renderThemeStudio(): void {
           const meta = ROLE_META[roleKey];
           return `
             <div class="color-item-row">
-              <span>${meta.label.split(' ')[0]}</span>
+              <span>${roleLabel(roleKey, true)}</span>
               <input type="color" class="color-picker-input" data-role-col="${roleKey}" value="${meta.color}" />
             </div>
           `;
@@ -3710,8 +3739,8 @@ function setShortcutPanelOpen(open: boolean): void {
   const panel = document.getElementById('shortcut-panel')!;
   panel.innerHTML = `
     <div class="shortcut-header">
-      <span>⌨ 快捷键一览</span>
-      <button class="btn" id="btn-close-shortcuts" type="button">✕ 关闭</button>
+      <span>${t('shortcutsCmd')}</span>
+      <button class="btn" id="btn-close-shortcuts" type="button">${t('closeBtn')}</button>
     </div>
     <div class="shortcut-grid">
       ${SHORTCUT_GROUPS.map(
