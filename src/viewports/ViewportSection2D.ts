@@ -13,7 +13,7 @@ import { getTheme } from '../core/theme';
 import { BlockType, CrossSectionSliceItem, LevelPOI, Vec2, Vec3 } from '../core/types';
 
 type SectionDrag =
-  | { type: 'pan'; startMouse: Vec2; startPan: Vec2 }
+  | { type: 'pan'; startMouse: Vec2; startPan: Vec2; moved?: boolean; button?: number }
   | { type: 'move_uv'; id: string; startU: number; startV: number; origPos: Vec3; moved?: boolean }
   | { type: 'resize_top'; id: string; startV: number; origY: number; origH: number; moved?: boolean }
   | { type: 'resize_width'; id: string; side: 'left' | 'right'; startU: number; origPos: Vec3; origW: number; moved?: boolean }
@@ -35,6 +35,12 @@ export class ViewportSection2D {
   private drag: SectionDrag | null = null;
   private mouseUV: Vec2 = [0, 0];
   private hatchPatternCache = new Map<string, CanvasPattern>();
+  public onContextMenu?: (ev: {
+    clientX: number;
+    clientY: number;
+    target: { kind: 'block' | 'poi'; id: string } | null;
+    worldPt?: Vec3;
+  }) => void;
 
   constructor(container: HTMLElement, store: LevelStore) {
     this.store = store;
@@ -193,7 +199,7 @@ export class ViewportSection2D {
       this.mouseUV = uv;
 
       if (e.button === 1 || e.button === 2) {
-        this.drag = { type: 'pan', startMouse: [sx, sy], startPan: [...this.pan] };
+        this.drag = { type: 'pan', startMouse: [sx, sy], startPan: [...this.pan], moved: false, button: e.button };
         return;
       }
 
@@ -403,10 +409,11 @@ export class ViewportSection2D {
       const tz = (end[1] - start[1]) / Math.max(0.1, sectionLength);
 
       if (this.drag.type === 'pan') {
-        this.pan = [
-          this.drag.startPan[0] + (sx - this.drag.startMouse[0]),
-          this.drag.startPan[1] + (sy - this.drag.startMouse[1]),
-        ];
+        const dx = sx - this.drag.startMouse[0];
+        const dy = sy - this.drag.startMouse[1];
+        if (!this.drag.moved && Math.hypot(dx, dy) < 4) return;
+        this.drag.moved = true;
+        this.pan = [this.drag.startPan[0] + dx, this.drag.startPan[1] + dy];
         this.render();
         return;
       }
@@ -536,12 +543,12 @@ export class ViewportSection2D {
       }
     });
 
-    window.addEventListener('mouseup', () => {
+    window.addEventListener('mouseup', (e) => {
       if (!this.drag) return;
       const d = this.drag;
       this.drag = null;
 
-      const { sectionLength } = computeCrossSection(this.store.doc);
+      const { sectionLength, items } = computeCrossSection(this.store.doc);
       const { start, end } = this.store.doc.sectionPlane;
       const tx = (end[0] - start[0]) / Math.max(0.1, sectionLength);
       const tz = (end[1] - start[1]) / Math.max(0.1, sectionLength);
@@ -550,6 +557,79 @@ export class ViewportSection2D {
         Number(v.toFixed(2)),
         Number((start[1] + u * tz).toFixed(2)),
       ];
+
+      if (d.type === 'pan') {
+        if (d.button === 2 && !d.moved) {
+          const rect = this.canvas.getBoundingClientRect();
+          if (
+            e.clientX >= rect.left &&
+            e.clientX <= rect.right &&
+            e.clientY >= rect.top &&
+            e.clientY <= rect.bottom
+          ) {
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            const uv = this.screenToUV(sx, sy, sectionLength);
+            const pt3D = uvToWorld3D(this.store.snapValue(uv[0]), this.store.snapValue(uv[1]));
+
+            for (let i = this.store.doc.pois.length - 1; i >= 0; i--) {
+              const p = this.store.doc.pois[i];
+              const pu = (p.position[0] - start[0]) * tx + (p.position[2] - start[1]) * tz;
+              const [psx, psy] = this.uvToScreen(pu, p.position[1] + p.eyeHeight * 0.6, sectionLength);
+              if (Math.hypot(sx - psx, sy - psy) <= 13) {
+                this.store.setSelection({ kind: 'poi', id: p.id });
+                this.onContextMenu?.({
+                  clientX: e.clientX,
+                  clientY: e.clientY,
+                  target: { kind: 'poi', id: p.id },
+                  worldPt: pt3D,
+                });
+                return;
+              }
+            }
+
+            let hitItem: CrossSectionSliceItem | null = null;
+            for (let i = items.length - 1; i >= 0; i--) {
+              const it = items[i];
+              if (it.cutPolygons.some((poly) => this.pointInPoly(uv, poly))) {
+                hitItem = it;
+                break;
+              }
+            }
+            if (!hitItem) {
+              for (let i = items.length - 1; i >= 0; i--) {
+                const it = items[i];
+                if (
+                  it.slabProjections.some(
+                    ([u0, y0, u1, y1]) => uv[0] >= u0 && uv[0] <= u1 && uv[1] >= y0 && uv[1] <= y1
+                  )
+                ) {
+                  hitItem = it;
+                  break;
+                }
+              }
+            }
+            if (hitItem) {
+              this.store.setSelection({ kind: 'block', id: hitItem.block.id });
+              this.onContextMenu?.({
+                clientX: e.clientX,
+                clientY: e.clientY,
+                target: { kind: 'block', id: hitItem.block.id },
+                worldPt: pt3D,
+              });
+              return;
+            }
+
+            this.onContextMenu?.({
+              clientX: e.clientX,
+              clientY: e.clientY,
+              target: null,
+              worldPt: pt3D,
+            });
+          }
+        }
+        return;
+      }
 
       if (d.type === 'draw_block_uv') {
         const w = Math.max(1.0, Math.abs(d.curUV[0] - d.startUV[0]) || 3.0);

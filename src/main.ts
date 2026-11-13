@@ -46,6 +46,7 @@ import {
   GameDimensionMode,
   PlayerCameraMode,
   POICategory,
+  Vec3,
   ViewportLayout,
 } from './core/types';
 import {
@@ -270,6 +271,9 @@ app.innerHTML = `
 
     <!-- 顶栏"菜单"弹出层：低频操作（新建 / 模板 / 导入导出 / 主题 / 语言）都收在这里 -->
     <div class="app-menu" id="app-menu" role="menu"></div>
+
+    <!-- 视口 / 物件右键上下文菜单 -->
+    <div class="app-menu ctx-menu" id="ctx-menu" role="menu"></div>
 
     <!-- 命令面板 (Ctrl+K)：按名称搜索任何操作 -->
     <div class="cmd-backdrop" id="cmd-backdrop">
@@ -998,8 +1002,259 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape') {
     if (isCommandPaletteOpen()) setCommandPaletteOpen(false);
     else if (isAppMenuOpen) setAppMenuOpen(false);
+    else if (isCtxMenuOpen) closeContextMenu();
   }
 });
+
+// ---- 视口与物件右键上下文菜单 ----
+let isCtxMenuOpen = false;
+let ctxMenuActionMap = new Map<string, () => void>();
+
+function closeContextMenu(): void {
+  if (!isCtxMenuOpen) return;
+  isCtxMenuOpen = false;
+  ctxMenuActionMap.clear();
+  document.getElementById('ctx-menu')?.classList.remove('open');
+}
+
+function openContextMenu(ev: {
+  clientX: number;
+  clientY: number;
+  target: { kind: 'block' | 'poi'; id: string } | null;
+  worldPt?: Vec3;
+}): void {
+  setAppMenuOpen(false);
+  const menu = document.getElementById('ctx-menu')!;
+  ctxMenuActionMap.clear();
+
+  const registerAct = (key: string, fn: () => void): string => {
+    ctxMenuActionMap.set(key, fn);
+    return key;
+  };
+
+  const itemBtn = (key: string, label: string, hint: string | undefined, fn: () => void, danger = false): string => {
+    registerAct(key, fn);
+    return `<button type="button" class="menu-item" data-ctx-act="${key}" role="menuitem" ${danger ? 'style="color:#fca5a5;"' : ''}><span class="menu-label">${label}</span>${hint ? `<kbd>${hint}</kbd>` : ''}</button>`;
+  };
+
+  const blk = ev.target?.kind === 'block' ? store.doc.blocks.find((b) => b.id === ev.target!.id) : null;
+  const poi = ev.target?.kind === 'poi' ? store.doc.pois.find((p) => p.id === ev.target!.id) : null;
+  const wp: Vec3 = ev.worldPt ?? [0, store.creationDefaults.baseY, 0];
+
+  if (blk) {
+    const roleMeta = ROLE_META[blk.role] || ROLE_META.walkable;
+    const badgeCol = blk.color || roleMeta.color;
+    const quickRoles: BlockRole[] = ['walkable', 'wall', 'cover_low', 'cover_full', 'one_way_platform', 'climbable', 'hazard', 'objective'];
+
+    menu.innerHTML = `
+      <div class="ctx-menu-header">
+        <span class="color-swatch" style="background:${badgeCol};width:10px;height:10px;border-radius:3px;flex-shrink:0;"></span>
+        <span style="font-weight:700;color:var(--text-main);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🧱 ${escapeHTML(blk.name)}</span>
+        <span style="margin-left:auto;font-size:9.5px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;">${blk.size.join('×')}m · ${blk.floor}F</span>
+      </div>
+      <div class="menu-group">
+        ${itemBtn('frame', t('btnFrameSel'), 'F', () => store.requestFrameSelected())}
+        ${itemBtn('edit-note', t('ctxEditNote'), undefined, () => {
+          store.showFloatingNoteCard = true;
+          isNoteCardExpanded = true;
+          renderFloatingNoteCard();
+          setTimeout(() => document.getElementById('fnc-note-in')?.focus(), 30);
+        })}
+        ${itemBtn('dup', t('ctxDuplicate'), 'Ctrl D', () => store.duplicateSelectedBlock())}
+      </div>
+      <div class="menu-group">
+        <div class="ctx-inline-row">
+          ${(['translate', 'rotate', 'scale'] as const)
+            .map((tfMode) => {
+              const lbl = tfMode === 'translate' ? t('tfTranslate') : tfMode === 'rotate' ? t('tfRotate') : t('tfScale');
+              const k = registerAct(`tf-${tfMode}`, () => {
+                store.activeTool = 'select';
+                store.transformMode = tfMode;
+                store.notify(false);
+              });
+              return `<button type="button" class="ctx-pill ${store.transformMode === tfMode ? 'active' : ''}" data-ctx-act="${k}">${lbl}</button>`;
+            })
+            .join('')}
+        </div>
+      </div>
+      <div class="menu-group">
+        <div class="menu-group-title">${t('ctxQuickRole')}</div>
+        <div class="ctx-role-grid">
+          ${quickRoles
+            .map((rKey) => {
+              const rm = ROLE_META[rKey];
+              const k = registerAct(`role-${rKey}`, () => {
+                store.pushUndoSnapshot();
+                store.updateBlockLive(blk.id, { role: rKey }, true);
+              });
+              return `<button type="button" class="ctx-pill ${blk.role === rKey ? 'active' : ''}" data-ctx-act="${k}" title="${roleLabel(rKey, false)}">
+                <span class="color-swatch" style="background:${rm.color};width:7px;height:7px;border-radius:2px;"></span>
+                <span>${roleLabel(rKey, true)}</span>
+              </button>`;
+            })
+            .join('')}
+        </div>
+      </div>
+      <div class="menu-group">
+        <div class="menu-group-title">${t('ctxQuickFloor')}</div>
+        <div class="ctx-inline-row">
+          ${[-1, 0, 1, 2]
+            .map((fl) => {
+              const flLbl = fl === -1 ? 'B1' : `${fl + 1}F`;
+              const k = registerAct(`fl-${fl}`, () => {
+                store.pushUndoSnapshot();
+                const dy = (fl - blk.floor) * 3.0;
+                store.updateBlockLive(
+                  blk.id,
+                  {
+                    floor: fl,
+                    position: [blk.position[0], Number((blk.position[1] + dy).toFixed(2)), blk.position[2]],
+                  },
+                  true
+                );
+              });
+              return `<button type="button" class="ctx-pill ${blk.floor === fl ? 'active' : ''}" data-ctx-act="${k}">${flLbl}</button>`;
+            })
+            .join('')}
+        </div>
+      </div>
+      <div class="menu-group">
+        ${itemBtn('mirror-x', t('macroMirrorX'), undefined, () =>
+          store.dispatchAICommand({ action: 'mirror_blocks', axis: 'x', blockIds: [blk.id] })
+        )}
+        ${itemBtn('mirror-z', t('macroMirrorZ'), undefined, () =>
+          store.dispatchAICommand({ action: 'mirror_blocks', axis: 'z', blockIds: [blk.id] })
+        )}
+        ${itemBtn('del', `🗑️ ${t('delBtn')}`, 'Del', () => store.deleteSelected(), true)}
+      </div>
+    `;
+  } else if (poi) {
+    const pm = POI_META[poi.category] || POI_META.objective;
+    const isEnemy = poi.category === 'spawn_enemy' || poi.category === 'sniper_nest' || poi.category === 'boss';
+
+    menu.innerHTML = `
+      <div class="ctx-menu-header">
+        <span class="color-swatch" style="background:${pm.color};width:10px;height:10px;border-radius:50%;flex-shrink:0;"></span>
+        <span style="font-weight:700;color:var(--text-main);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📍 ${escapeHTML(poi.name)}</span>
+        <span style="margin-left:auto;font-size:9.5px;color:var(--text-muted);">${poiLabel(poi.category)}</span>
+      </div>
+      <div class="menu-group">
+        ${itemBtn('frame', t('btnFrameSel'), 'F', () => store.requestFrameSelected())}
+        ${itemBtn('edit-note', t('ctxEditNote'), undefined, () => {
+          store.showFloatingNoteCard = true;
+          isNoteCardExpanded = true;
+          renderFloatingNoteCard();
+          setTimeout(() => document.getElementById('fnc-note-in')?.focus(), 30);
+        })}
+        ${
+          isEnemy
+            ? itemBtn('add-wp', t('addWPToolBtn'), undefined, () => {
+                store.activeTool = 'add_enemy_waypoint';
+                store.notify(false);
+              })
+            : ''
+        }
+        ${itemBtn('toggle-vis', `${t('ctxToggleVision')} (${poi.showVision ? 'ON' : 'OFF'})`, undefined, () => {
+          store.pushUndoSnapshot();
+          store.updatePOILive(poi.id, { showVision: !poi.showVision }, true);
+        })}
+      </div>
+      <div class="menu-group">
+        ${itemBtn('del', `🗑️ ${t('delBtn')}`, 'Del', () => store.deleteSelected(), true)}
+      </div>
+    `;
+  } else {
+    menu.innerHTML = `
+      <div class="ctx-menu-header">
+        <span style="font-weight:700;color:var(--accent);">${t('ctxViewportTitle')}</span>
+        <span style="margin-left:auto;font-size:9.5px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;">(${wp[0]}, ${wp[1]}, ${wp[2]})</span>
+      </div>
+      <div class="menu-group">
+        ${itemBtn('spawn-blk', t('ctxSpawnBlockHere'), 'B', () => {
+          const { role, floor, height, customColor } = store.creationDefaults;
+          const h =
+            role === 'walkable'
+              ? 0.5
+              : role === 'cover_low'
+              ? store.doc.metricsProfile.lowCoverHeight
+              : role === 'cover_full'
+              ? store.doc.metricsProfile.fullCoverHeight
+              : height;
+          const cy = role === 'walkable' ? Number((wp[1] - h / 2).toFixed(2)) : Number((wp[1] + h / 2).toFixed(2));
+          store.dispatchAICommand({
+            action: 'add_block',
+            block: {
+              name: `${roleLabel(role, true)}_${store.doc.blocks.length + 1}`,
+              type: 'box',
+              role,
+              position: [wp[0], cy, wp[2]],
+              size: [3, h, 3],
+              rotation: [0, 0, 0],
+              floor,
+              color: customColor,
+            },
+          });
+        })}
+        ${itemBtn('spawn-poi', t('ctxSpawnPOIHere'), undefined, () => {
+          const cat = store.creationDefaults.poiCategory || 'spawn_enemy';
+          store.dispatchAICommand({
+            action: 'add_poi',
+            poi: {
+              name: `${poiLabel(cat)}_${store.doc.pois.length + 1}`,
+              category: cat,
+              position: [wp[0], wp[1], wp[2]],
+              yaw: 0,
+              showVision: cat === 'sniper_nest' || cat === 'spawn_enemy' || cat === 'boss',
+              fov: 85,
+              visionRange: 20,
+              eyeHeight: store.doc.metricsProfile.eyeHeight,
+            },
+          });
+        })}
+      </div>
+      <div class="menu-group">
+        ${itemBtn('reset-cam', t('ctxResetCamera'), undefined, () => {
+          vp3D.resetCamera();
+          vpTop.resetCamera();
+          vpSec.resetCamera();
+        })}
+        ${itemBtn('playtest', store.isPlaytesting ? t('playtestStop') : t('playtestStart'), 'Tab', () =>
+          store.isPlaytesting ? vp3D.stopPlaytest() : vp3D.startPlaytest()
+        )}
+      </div>
+    `;
+  }
+
+  menu.style.left = '0px';
+  menu.style.top = '0px';
+  menu.classList.add('open');
+  isCtxMenuOpen = true;
+
+  const rect = menu.getBoundingClientRect();
+  const maxX = Math.max(8, window.innerWidth - rect.width - 8);
+  const maxY = Math.max(8, window.innerHeight - rect.height - 8);
+  menu.style.left = `${Math.min(Math.max(8, ev.clientX), maxX)}px`;
+  menu.style.top = `${Math.min(Math.max(8, ev.clientY), maxY)}px`;
+}
+
+document.getElementById('ctx-menu')!.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-ctx-act]');
+  if (!btn) return;
+  const act = ctxMenuActionMap.get(btn.dataset.ctxAct!);
+  closeContextMenu();
+  act?.();
+});
+
+window.addEventListener('mousedown', (e) => {
+  if (!isCtxMenuOpen) return;
+  const target = e.target as HTMLElement;
+  if (target.closest('#ctx-menu')) return;
+  closeContextMenu();
+});
+
+vp3D.onContextMenu = openContextMenu;
+vpTop.onContextMenu = openContextMenu;
+vpSec.onContextMenu = openContextMenu;
 
 function renderTopBar(): void {
   withFocusPreserved(document.getElementById('topbar')!, renderTopBarNow);
@@ -2676,6 +2931,13 @@ function renderInspectorTab(container: HTMLElement): void {
       const id = item.dataset.selId!;
       store.setSelection({ kind, id });
       store.requestFrameSelected();
+    };
+    item.oncontextmenu = (e) => {
+      e.preventDefault();
+      const kind = item.dataset.selKind as 'block' | 'poi';
+      const id = item.dataset.selId!;
+      store.setSelection({ kind, id });
+      openContextMenu({ clientX: e.clientX, clientY: e.clientY, target: { kind, id } });
     };
   });
 }

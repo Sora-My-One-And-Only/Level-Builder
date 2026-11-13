@@ -55,11 +55,19 @@ export class Viewport3D {
   private overlayRenderKey = '';
   private lastPipBadgeKey = '';
 
-  // Unity RMB Flythrough Camera state
+  // Unity RMB Flythrough / Orbit Camera state
   public isRMBFlying = false;
+  private rmbFlyActive = false;
+  private rmbDragMoved = false;
   private flyYaw = 0;
   private flyPitch = -0.45;
   private pressedKeys = new Set<string>();
+  public onContextMenu?: (ev: {
+    clientX: number;
+    clientY: number;
+    target: { kind: 'block' | 'poi'; id: string } | null;
+    worldPt?: Vec3;
+  }) => void;
 
   // 3D Creation drag state
   private draw3DState: {
@@ -116,11 +124,11 @@ export class Viewport3D {
     this.orbit.enableDamping = true;
     this.orbit.dampingFactor = 0.08;
     this.orbit.target.set(0, 1, 0);
-    // Unity-like mouse mapping: Middle = Pan, Left (with Alt or default orbit) = Rotate, Wheel = Dolly
+    // Mouse mapping: Left = Rotate, Middle = Pan, Wheel = Dolly; Right is handled by custom Orbit/Fly + ContextMenu
     this.orbit.mouseButtons = {
       LEFT: THREE.MOUSE.ROTATE,
       MIDDLE: THREE.MOUSE.PAN,
-      RIGHT: THREE.MOUSE.PAN,
+      RIGHT: -1 as unknown as THREE.MOUSE,
     };
 
     this.transformControl = new TransformControls(this.camera, this.renderer.domElement);
@@ -1235,9 +1243,14 @@ export class Viewport3D {
         return;
       }
 
-      // Unity RMB Flythrough Mode!
+      // Right Mouse Button: Orbit around target (or WASD Flythrough if WASD/QE pressed), or Context Menu on click
       if (e.button === 2) {
+        this.cameraTweenId++;
+        this.flushOrbitDamping();
+        this.pressedKeys.clear();
         this.isRMBFlying = true;
+        this.rmbFlyActive = false;
+        this.rmbDragMoved = false;
         this.orbit.enabled = false;
         const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
         this.flyYaw = euler.y;
@@ -1332,6 +1345,26 @@ export class Viewport3D {
       if (this.store.isPlaytesting) return;
 
       if (this.isRMBFlying) {
+        const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
+        if (!this.rmbDragMoved && dist < 4) return;
+        this.rmbDragMoved = true;
+
+        if (!this.rmbFlyActive) {
+          // Orbit around current target pivot so the scene center stays stationary on screen
+          const offset = this.camera.position.clone().sub(this.orbit.target);
+          const sph = new THREE.Spherical().setFromVector3(offset);
+          sph.theta -= e.movementX * 0.0045;
+          sph.phi = Math.max(0.05, Math.min(Math.PI - 0.05, sph.phi - e.movementY * 0.0045));
+          offset.setFromSpherical(sph);
+          this.camera.position.copy(this.orbit.target).add(offset);
+          this.camera.lookAt(this.orbit.target);
+          const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
+          this.flyYaw = euler.y;
+          this.flyPitch = euler.x;
+          return;
+        }
+
+        // First-person free look when WASD/QE flythrough is active
         this.flyYaw -= e.movementX * 0.003;
         this.flyPitch = Math.max(-1.45, Math.min(1.45, this.flyPitch - e.movementY * 0.003));
         const euler = new THREE.Euler(this.flyPitch, this.flyYaw, 0, 'YXZ');
@@ -1383,9 +1416,25 @@ export class Viewport3D {
 
     window.addEventListener('pointerup', (e) => {
       if (this.isRMBFlying && e.button === 2) {
+        const wasDragged = this.rmbDragMoved || this.rmbFlyActive;
         this.isRMBFlying = false;
+        this.rmbFlyActive = false;
+        this.rmbDragMoved = false;
+        this.pressedKeys.clear();
+        this.flushOrbitDamping();
         if (!this.store.isPlaytesting && !this.isDraggingTransform) {
           this.orbit.enabled = true;
+        }
+        if (!wasDragged && !this.store.isPlaytesting) {
+          const rect = this.renderer.domElement.getBoundingClientRect();
+          if (
+            e.clientX >= rect.left &&
+            e.clientX <= rect.right &&
+            e.clientY >= rect.top &&
+            e.clientY <= rect.bottom
+          ) {
+            this.handleRightClickContextMenu(e.clientX, e.clientY);
+          }
         }
         return;
       }
@@ -1512,7 +1561,26 @@ export class Viewport3D {
     });
 
     window.addEventListener('keydown', (e) => {
-      this.pressedKeys.add(e.code);
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        this.pressedKeys.add(e.code);
+        if (
+          this.isRMBFlying &&
+          !this.rmbFlyActive &&
+          (e.code === 'KeyW' ||
+            e.code === 'KeyA' ||
+            e.code === 'KeyS' ||
+            e.code === 'KeyD' ||
+            e.code === 'KeyQ' ||
+            e.code === 'KeyE')
+        ) {
+          const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
+          this.flyYaw = euler.y;
+          this.flyPitch = euler.x;
+          this.rmbFlyActive = true;
+        }
+      }
       if (e.code === 'KeyC' && this.store.isPlaytesting) {
         this.playCrouching = !this.playCrouching;
       }
@@ -1541,6 +1609,10 @@ export class Viewport3D {
       this.pressedKeys.delete(e.code);
     });
 
+    window.addEventListener('blur', () => {
+      this.pressedKeys.clear();
+    });
+
     window.addEventListener('mousemove', (e) => {
       if (!this.store.isPlaytesting) return;
       if (document.pointerLockElement === this.renderer.domElement || e.buttons === 1 || e.buttons === 2) {
@@ -1550,8 +1622,67 @@ export class Viewport3D {
     });
   }
 
+  private flushOrbitDamping(): void {
+    const prev = this.orbit.enableDamping;
+    this.orbit.enableDamping = false;
+    this.orbit.update();
+    this.orbit.enableDamping = prev;
+  }
+
+  private handleRightClickContextMenu(clientX: number, clientY: number): void {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    this.raycaster.setFromCamera(mouse, this.camera);
+
+    const poiHits = this.raycaster.intersectObjects(Array.from(this.poiMap.values()), true);
+    if (poiHits.length > 0) {
+      let cur: THREE.Object3D | null = poiHits[0].object;
+      while (cur && !cur.userData?.poiId) cur = cur.parent;
+      if (cur?.userData?.poiId) {
+        const id = cur.userData.poiId as string;
+        this.store.setSelection({ kind: 'poi', id });
+        this.onContextMenu?.({
+          clientX,
+          clientY,
+          target: { kind: 'poi', id },
+        });
+        return;
+      }
+    }
+
+    const blkHits = this.raycaster.intersectObjects(Array.from(this.meshMap.values()), true);
+    if (blkHits.length > 0) {
+      let cur: THREE.Object3D | null = blkHits[0].object;
+      while (cur && !cur.userData?.blockId) cur = cur.parent;
+      if (cur?.userData?.blockId) {
+        const id = cur.userData.blockId as string;
+        this.store.setSelection({ kind: 'block', id });
+        const p = blkHits[0].point;
+        this.onContextMenu?.({
+          clientX,
+          clientY,
+          target: { kind: 'block', id },
+          worldPt: [this.store.snapValue(p.x), Number(p.y.toFixed(2)), this.store.snapValue(p.z)],
+        });
+        return;
+      }
+    }
+
+    const hit = this.hitTest3DObjectAndPoint(clientX, clientY, true);
+    this.onContextMenu?.({
+      clientX,
+      clientY,
+      target: null,
+      worldPt: hit?.pt ?? [0, this.store.creationDefaults.baseY, 0],
+    });
+  }
+
   /** Unity RMB + WASD/EQ Flythrough movement update */
   private updateRMBFlythrough(dt: number): void {
+    if (!this.rmbFlyActive) return;
     const fast = this.pressedKeys.has('ShiftLeft') || this.pressedKeys.has('ShiftRight');
     const speed = (fast ? 26 : 11) * dt;
 

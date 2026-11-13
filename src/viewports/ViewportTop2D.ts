@@ -19,7 +19,7 @@ import { getTheme } from '../core/theme';
 import { BlockType, LevelBlock, LevelPOI, POICategory, SightlineLink, Vec2, Vec3 } from '../core/types';
 
 type DragInteraction =
-  | { type: 'pan'; startMouse: Vec2; startPan: Vec2; moved?: boolean }
+  | { type: 'pan'; startMouse: Vec2; startPan: Vec2; moved?: boolean; button?: number }
   | { type: 'move_block'; id: string; startWorld: Vec2; origPos: Vec3; moved?: boolean }
   | {
       type: 'resize_block';
@@ -51,6 +51,12 @@ export class ViewportTop2D {
   private drag: DragInteraction | null = null;
   private mouseWorld: Vec2 = [0, 0];
   private spacePressed = false;
+  public onContextMenu?: (ev: {
+    clientX: number;
+    clientY: number;
+    target: { kind: 'block' | 'poi'; id: string } | null;
+    worldPt?: Vec3;
+  }) => void;
   public get activePOICategory(): POICategory {
     return this.store.creationDefaults.poiCategory;
   }
@@ -347,7 +353,7 @@ export class ViewportTop2D {
           this.render();
           return;
         }
-        this.drag = { type: 'pan', startMouse: [sx, sy], startPan: [...this.pan] };
+        this.drag = { type: 'pan', startMouse: [sx, sy], startPan: [...this.pan], moved: false, button: e.button };
         return;
       }
 
@@ -584,10 +590,11 @@ export class ViewportTop2D {
       if (!this.drag) return;
 
       if (this.drag.type === 'pan') {
-        this.pan = [
-          this.drag.startPan[0] + (sx - this.drag.startMouse[0]),
-          this.drag.startPan[1] + (sy - this.drag.startMouse[1]),
-        ];
+        const dx = sx - this.drag.startMouse[0];
+        const dy = sy - this.drag.startMouse[1];
+        if (!this.drag.moved && Math.hypot(dx, dy) < 4) return;
+        this.drag.moved = true;
+        this.pan = [this.drag.startPan[0] + dx, this.drag.startPan[1] + dy];
         this.render();
         return;
       }
@@ -748,6 +755,54 @@ export class ViewportTop2D {
       if (!this.drag) return;
       const d = this.drag;
       this.drag = null;
+
+      if (d.type === 'pan') {
+        if (d.button === 2 && !d.moved) {
+          const rect = this.canvas.getBoundingClientRect();
+          if (
+            e.clientX >= rect.left &&
+            e.clientX <= rect.right &&
+            e.clientY >= rect.top &&
+            e.clientY <= rect.bottom
+          ) {
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            const world = this.screenToWorld(sx, sy);
+            const wx = this.store.snapValue(world[0]);
+            const wz = this.store.snapValue(world[1]);
+            const wy = this.getSurfaceElevationAt(wx, wz);
+            const poiHit = this.hitTestPOI(sx, sy);
+            if (poiHit) {
+              this.store.setSelection({ kind: 'poi', id: poiHit.poi.id });
+              this.onContextMenu?.({
+                clientX: e.clientX,
+                clientY: e.clientY,
+                target: { kind: 'poi', id: poiHit.poi.id },
+                worldPt: [wx, wy, wz],
+              });
+              return;
+            }
+            const blkHit = this.hitTestBlock(world[0], world[1]);
+            if (blkHit) {
+              this.store.setSelection({ kind: 'block', id: blkHit.id });
+              this.onContextMenu?.({
+                clientX: e.clientX,
+                clientY: e.clientY,
+                target: { kind: 'block', id: blkHit.id },
+                worldPt: [wx, wy, wz],
+              });
+              return;
+            }
+            this.onContextMenu?.({
+              clientX: e.clientX,
+              clientY: e.clientY,
+              target: null,
+              worldPt: [wx, wy, wz],
+            });
+          }
+        }
+        return;
+      }
 
       if (
         d.type === 'move_block' ||
