@@ -623,11 +623,28 @@ export class ViewportSection2D {
     });
   }
 
+  private placedLabelBoxes: { x0: number; y0: number; x1: number; y1: number }[] = [];
+
+  private tryPlaceLabel(cx: number, cy: number, w: number, h: number, force = false): boolean {
+    const pad = 3;
+    const box = { x0: cx - w / 2 - pad, y0: cy - h / 2 - pad, x1: cx + w / 2 + pad, y1: cy + h / 2 + pad };
+    if (!force) {
+      for (const b of this.placedLabelBoxes) {
+        if (box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0) {
+          return false;
+        }
+      }
+    }
+    this.placedLabelBoxes.push(box);
+    return true;
+  }
+
   public render(): void {
     const cw = this.canvas.clientWidth;
     const ch = this.canvas.clientHeight;
     if (cw === 0 || ch === 0) return;
     const ctx = this.ctx;
+    this.placedLabelBoxes = [];
 
     ctx.fillStyle = getTheme().vp2dBg || '#090d16';
     ctx.fillRect(0, 0, cw, ch);
@@ -758,8 +775,8 @@ export class ViewportSection2D {
       ctx.strokeRect(sx0, sy0, w, h);
       ctx.setLineDash([]);
 
-      if (this.store.overlays.showDimensions && (isSel || (w > 64 && h > 20))) {
-        ctx.globalAlpha = isSel ? 0.9 : 0.55;
+      if (isSel && this.store.overlays.showDimensions) {
+        ctx.globalAlpha = 0.9;
         ctx.fillStyle = '#cbd5e1';
         ctx.font = '9px Inter, sans-serif';
         ctx.textAlign = 'center';
@@ -807,39 +824,37 @@ export class ViewportSection2D {
       ctx.stroke();
     }
 
-    // Draw top elevation & slope callout on cut geometry
+    // Draw top elevation & slope callout on cut geometry (with collision avoidance so labels never pile up)
     const spanPx = maxSx - minSx;
-    if (this.store.overlays.showDimensions && (isSel || spanPx > 46)) {
+    const isTrigger = item.block.role.startsWith('trigger_');
+    if (this.store.overlays.showDimensions && (isSel || (!isTrigger && spanPx > 52))) {
       const cx = (minSx + maxSx) / 2;
-      ctx.fillStyle = isSel ? '#38bdf8' : '#e2e8f0';
       ctx.font = '600 9.5px Inter, sans-serif';
-      ctx.textAlign = 'center';
       const label = item.slopeAngle !== undefined
         ? `${item.block.name} (${item.slopeAngle}°)`
-        : isSel || spanPx > 72
+        : isSel || spanPx > 82
         ? `${item.block.name} (${topY >= 0 ? '+' : ''}${topY}m)`
         : item.block.name;
-      ctx.fillText(label, cx, minSy - 5);
+      const lw = ctx.measureText(label).width + 8;
+      const labelY = minSy - 6;
+      if (this.tryPlaceLabel(cx, labelY, lw, 14, isSel)) {
+        ctx.fillStyle = isSel ? '#38bdf8' : '#e2e8f0';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, cx, labelY);
+      }
 
       if (item.warning) {
         ctx.fillStyle = '#fca5a5';
         ctx.font = 'bold 9.5px Inter, sans-serif';
-        ctx.fillText(`⚠ ${item.warning}`, cx, minSy - 17);
+        ctx.textAlign = 'center';
+        ctx.fillText(`⚠ ${item.warning}`, cx, minSy - 18);
       }
 
       if (item.block.role === 'one_way_platform' && (isSel || spanPx > 60)) {
         ctx.fillStyle = '#5eead4';
         ctx.font = 'bold 8.5px Inter, sans-serif';
+        ctx.textAlign = 'center';
         ctx.fillText('▲ 单向跳台', cx, minSy + 11);
-      }
-
-      if (this.store.overlays.showDesignNotes && (item.block.notes || item.block.designTag) && (isSel || spanPx > 56)) {
-        const badgeTxt = isSel || this.zoom >= 26
-          ? (item.block.designTag ? `📝 ${item.block.designTag.split(' ')[0]}` : '📝 备注')
-          : '📝';
-        ctx.fillStyle = '#fef08a';
-        ctx.font = '600 9px Inter, sans-serif';
-        ctx.fillText(badgeTxt, cx, minSy - (item.warning ? 28 : 16));
       }
     }
 
@@ -948,9 +963,13 @@ export class ViewportSection2D {
         ctx.beginPath();
         ctx.arc(sx, eyeSy, 5, 0, Math.PI * 2);
         ctx.fill();
+        const isPoiSel = this.store.selection?.kind === 'poi' && this.store.selection.id === poi.id;
         ctx.font = '600 9px Inter, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(poi.name, sx, eyeSy - 8);
+        const poiLw = ctx.measureText(poi.name).width + 6;
+        if (this.tryPlaceLabel(sx, eyeSy - 10, poiLw, 12, isPoiSel)) {
+          ctx.textAlign = 'center';
+          ctx.fillText(poi.name, sx, eyeSy - 8);
+        }
 
         // If Player Spawn, project Vertical Camera Pitch + Vertical FOV Frustum Cone onto Section View!
         if (poi.category === 'spawn_player' && (this.store.doc.metricsProfile.showPlayerCameraFrustum ?? true)) {

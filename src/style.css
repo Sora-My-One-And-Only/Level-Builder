@@ -545,6 +545,7 @@ body,
 }
 
 .vp-header {
+  container-type: inline-size;
   height: 26px;
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
@@ -559,7 +560,13 @@ body,
   flex-shrink: 0;
   white-space: nowrap;
   overflow: hidden;
-  gap: 8px;
+  gap: 6px;
+}
+
+@container (max-width: 245px) {
+  .vp-header .chip-toggle .lbl {
+    display: none;
+  }
 }
 
 .vp-header > span {
@@ -1869,10 +1876,12 @@ html.theme-transitioning *::after {
   display: none;
 }
 
-.topbar.c1 #template-select,
-.topbar.c1 #layout-select,
-.topbar.c1 #export-select {
-  max-width: 124px;
+.topbar.c1 #template-select {
+  max-width: 108px;
+}
+
+.topbar.c1 #layout-select {
+  max-width: 98px;
 }
 
 .topbar.c2 #btn-open-theme-studio .lbl,
@@ -1880,48 +1889,50 @@ html.theme-transitioning *::after {
   display: none;
 }
 
-.topbar.c2 .select-pill {
-  max-width: 96px;
+.topbar.c2 #template-select {
+  max-width: 94px;
+}
+
+.topbar.c2 #layout-select {
+  max-width: 90px;
 }
 
 .topbar.c2 #bridge-text {
-  max-width: 84px;
+  max-width: 76px;
 }
 
-.topbar.c3 .select-pill {
-  width: 46px;
-  max-width: 46px;
-  text-overflow: clip;
+.topbar.c3 .dim-mode-bar:not(.workspace-switch) .lbl,
+.topbar.c3 #bridge-text {
+  display: none;
 }
 
-.topbar.c4 .dim-mode-btn:not(.active) .lbl,
+.topbar.c3 .level-title-input {
+  width: 96px;
+}
+
 .topbar.c4 #btn-playtest .lbl,
-.topbar.c4 #bridge-text,
 .topbar.c4 .topbar-sep {
   display: none;
 }
 
 .topbar.c4 .level-title-input {
-  width: 84px;
+  width: 78px;
 }
 
-/* ---- 图层栏：不换行，超出时横向滚动 ---- */
+/* ---- 图层栏：窄屏自动折行，确保所有开关与吸附/楼层控件完整可见 ---- */
 .overlay-bar {
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  height: 30px;
-  padding: 0 8px;
-}
-
-.overlay-bar::-webkit-scrollbar {
-  display: none;
+  flex-wrap: wrap;
+  overflow-x: hidden;
+  overflow-y: visible;
+  height: auto;
+  min-height: 28px;
+  padding: 3px 8px;
+  gap: 3px 8px;
 }
 
 .overlay-group {
-  flex-wrap: nowrap;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 3px;
 }
 
 .overlay-group > span {
@@ -2519,4 +2530,259 @@ input[type='range']:hover::-webkit-slider-thumb {
 .shortcut-row span {
   color: var(--text-muted);
   text-align: right;
+}
+
+/* ============================================================
+ * Workspace Modes · Single Main Viewport · Focus Mode
+ * 同一时间只露出当前任务需要的东西
+ * ============================================================ */
+[hidden] {
+  display: none !important;
+}
+
+/* 工作区切换：比维度切换更醒目一点，它决定整个界面露出什么 */
+.workspace-switch .dim-mode-btn.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/* 专注模式：只剩视口 */
+.workbench.focus-mode .topbar,
+.workbench.focus-mode .statusbar,
+.workbench.focus-mode .overlay-bar,
+.workbench.focus-mode .left-dock,
+.workbench.focus-mode .right-sidebar,
+.workbench.focus-mode .dock-resizer-v,
+.workbench.focus-mode .floating-note-card {
+  display: none !important;
+}
+
+/* 试玩：收起两侧面板和叠加条，顶栏保留用于退出 */
+.workbench.playtesting .overlay-bar,
+.workbench.playtesting .left-dock,
+.workbench.playtesting .right-sidebar,
+.workbench.playtesting .dock-resizer-v,
+.workbench.playtesting .floating-note-card {
+  display: none !important;
+}
+
+.focus-strip {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 40;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-1) 88%, transparent);
+  border: 1px solid var(--border-light);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+  opacity: 0.55;
+  transition: opacity 0.15s;
+}
+
+.focus-strip:hover,
+.focus-strip:focus-within {
+  opacity: 1;
+}
+
+.workbench.focus-mode .focus-strip {
+  display: flex;
+}
+
+.focus-btn {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+
+.focus-btn:hover {
+  background: var(--bg-2);
+  color: var(--text-main);
+}
+
+.focus-btn.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.focus-btn.focus-exit {
+  font-size: 11px;
+}
+
+.focus-btn kbd {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 10px;
+}
+
+.focus-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border-light);
+}
+
+/* ============================================================
+ * Top Bar Slimming · App Menu · Command Palette (Ctrl+K)
+ * ============================================================ */
+.kbd-hint {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 9px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.topbar.c1 .kbd-hint,
+.topbar.c2 #btn-app-menu .lbl,
+.topbar.c2 #btn-cmd-palette .lbl {
+  display: none;
+}
+
+.app-menu {
+  display: none;
+  position: fixed;
+  z-index: 140;
+  width: 248px;
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+}
+
+.app-menu.open {
+  display: block;
+  animation: ui-pop-in var(--dur-med) var(--ease-out) both;
+  transform-origin: top left;
+}
+
+.menu-group + .menu-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.menu-group-title {
+  padding: 4px 8px 2px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-main);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item.active {
+  background: var(--bg-2);
+}
+
+.menu-item.active {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-item kbd {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.cmd-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 160;
+  display: none;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.cmd-backdrop.open {
+  display: flex;
+  animation: ui-fade-in var(--dur-med) ease both;
+}
+
+.cmd-palette {
+  width: min(520px, 100%);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: ui-pop-in var(--dur-med) var(--ease-out) both;
+}
+
+.cmd-input {
+  width: 100%;
+  padding: 11px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-main);
+  font-size: 13px;
+  outline: none;
+}
+
+.cmd-list {
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.cmd-empty {
+  padding: 18px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
 }

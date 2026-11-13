@@ -853,11 +853,28 @@ export class ViewportTop2D {
     return `hsl(${hue}, 70%, 42%)`;
   }
 
+  private placedLabelBoxes: { x0: number; y0: number; x1: number; y1: number }[] = [];
+
+  private tryPlaceLabel(cx: number, cy: number, w: number, h: number, force = false): boolean {
+    const pad = 3;
+    const box = { x0: cx - w / 2 - pad, y0: cy - h / 2 - pad, x1: cx + w / 2 + pad, y1: cy + h / 2 + pad };
+    if (!force) {
+      for (const b of this.placedLabelBoxes) {
+        if (box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0) {
+          return false;
+        }
+      }
+    }
+    this.placedLabelBoxes.push(box);
+    return true;
+  }
+
   public render(): void {
     const cw = this.canvas.clientWidth;
     const ch = this.canvas.clientHeight;
     if (cw === 0 || ch === 0) return;
     const ctx = this.ctx;
+    this.placedLabelBoxes = [];
 
     ctx.fillStyle = getTheme().vp2dBg || '#0f172a';
     ctx.fillRect(0, 0, cw, ch);
@@ -1143,21 +1160,28 @@ export class ViewportTop2D {
       ctx.setLineDash([]);
     }
 
-    if (this.store.overlays.showDimensions && (isSelected || (pw > 44 && pd > 22))) {
-      const showTwoLines = isSelected || (pw > 70 && pd > 36);
-      ctx.fillStyle = '#f8fafc';
+    const isLargeBgFloor = b.role === 'walkable' && b.size[0] >= 14 && b.size[2] >= 14;
+    const isTriggerZone = b.role.startsWith('trigger_');
+    if (this.store.overlays.showDimensions && (isSelected || (!isLargeBgFloor && !isTriggerZone && pw > 52 && pd > 24) || (isLargeBgFloor && pw > 150))) {
       ctx.font = '600 9.5px Inter, system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      if (showTwoLines) {
-        ctx.fillText(b.name, 0, -2);
-        ctx.fillStyle = 'rgba(226, 232, 240, 0.78)';
-        ctx.font = '9.5px JetBrains Mono, monospace';
-        const elevStr = isSelected
-          ? `${topY >= 0 ? '+' : ''}${topY}m (${b.size[0]}×${b.size[2]}m)`
-          : `${topY >= 0 ? '+' : ''}${topY}m`;
-        ctx.fillText(elevStr, 0, 10);
-      } else {
-        ctx.fillText(b.name, 0, 3);
+      const labelW = Math.min(pw - 6, ctx.measureText(b.name).width + 10);
+      const localY = isLargeBgFloor ? pd / 2 - 12 : isTriggerZone ? -pd / 2 + 12 : 0;
+      const screenLabelY = cy + localY;
+      if (this.tryPlaceLabel(cx, screenLabelY, labelW, 18, isSelected)) {
+        const showTwoLines = isSelected || (!isLargeBgFloor && !isTriggerZone && pw > 76 && pd > 38);
+        ctx.fillStyle = '#f8fafc';
+        ctx.textAlign = 'center';
+        if (showTwoLines) {
+          ctx.fillText(b.name, 0, localY - 2);
+          ctx.fillStyle = 'rgba(226, 232, 240, 0.78)';
+          ctx.font = '9.5px JetBrains Mono, monospace';
+          const elevStr = isSelected
+            ? `${topY >= 0 ? '+' : ''}${topY}m (${b.size[0]}×${b.size[2]}m)`
+            : `${topY >= 0 ? '+' : ''}${topY}m`;
+          ctx.fillText(elevStr, 0, localY + 10);
+        } else {
+          ctx.fillText(b.name, 0, localY + 3);
+        }
       }
     }
 
@@ -1493,10 +1517,13 @@ export class ViewportTop2D {
     ctx.textBaseline = 'middle';
     ctx.fillText(meta.icon, sx, sy + 0.5);
 
-    ctx.fillStyle = '#f8fafc';
     ctx.font = '600 10px Inter, sans-serif';
-    ctx.textBaseline = 'top';
-    ctx.fillText(poi.name, sx, sy + 11);
+    const poiLw = ctx.measureText(poi.name).width + 6;
+    if (this.tryPlaceLabel(sx, sy + 16, poiLw, 13, isSel)) {
+      ctx.fillStyle = '#f8fafc';
+      ctx.textBaseline = 'top';
+      ctx.fillText(poi.name, sx, sy + 11);
+    }
 
     if (this.store.overlays.showDesignNotes && (poi.notes || poi.designTag)) {
       ctx.fillStyle = '#facc15';

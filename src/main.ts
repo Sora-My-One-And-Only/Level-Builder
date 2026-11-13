@@ -87,6 +87,59 @@ let isRightSidebarCollapsed = savedPanels.rightCollapsed === true;
 const collapsedDockSections = new Set<string>(savedPanels.collapsedDockSections || []);
 const collapsedCards = new Set<string>(savedPanels.collapsedCards || []);
 
+// ---- 工作区模式预设（搭建 / 分析）：无损切换面板展开重心，不隐藏任何页签或叠加层 ----
+type WorkspaceMode = 'build' | 'analyze';
+const VIEW_LAYOUTS: ViewportLayout[] = ['split_3d_2d', 'only_3d', 'only_top', 'only_section'];
+const ANALYSIS_TOOLS: ActiveTool[] = [
+  'edit_section',
+  'measure_jump',
+  'measure_ruler',
+  'add_enemy_waypoint',
+  'place_poi',
+  'draw_path',
+];
+let workspaceMode: WorkspaceMode = savedPanels.workspaceMode === 'analyze' ? 'analyze' : 'build';
+const modeLayouts: Partial<Record<WorkspaceMode, ViewportLayout>> = {};
+for (const m of ['build', 'analyze'] as WorkspaceMode[]) {
+  const saved = savedPanels.modeLayouts?.[m] as ViewportLayout | undefined;
+  if (saved && VIEW_LAYOUTS.includes(saved)) modeLayouts[m] = saved;
+}
+let isFocusMode = false;
+
+/** 默认采用三视口联动布局（2D横版/俯视专项模式除外），同时尊重用户在各工作区手动选择的布局 */
+function defaultLayoutFor(_mode: WorkspaceMode): ViewportLayout {
+  const dim = store.getDimensionMode();
+  if (dim === '2d_side') return 'only_section';
+  if (dim === '2d_topdown') return 'only_top';
+  return 'split_3d_2d';
+}
+
+/** 把当前模式落实到 store / 页签状态上（不负责重绘） */
+function applyWorkspaceState(isManualSwitch = false): void {
+  store.layout = modeLayouts[workspaceMode] ?? defaultLayoutFor(workspaceMode);
+  if (isManualSwitch) {
+    if (workspaceMode === 'build') {
+      collapsedDockSections.delete('sec1');
+      collapsedDockSections.delete('sec2');
+      collapsedDockSections.delete('sec_role');
+      collapsedDockSections.add('sec3');
+      if (activeSidebarTab === 'audit') activeSidebarTab = 'inspector';
+    } else {
+      collapsedDockSections.delete('sec1');
+      collapsedDockSections.add('sec2');
+      collapsedDockSections.add('sec_role');
+      collapsedDockSections.delete('sec3');
+      store.overlays.showVisionCones = true;
+      store.overlays.showFlowPaths = true;
+      store.overlays.showJumpArcs = true;
+      if (activeSidebarTab === 'inspector' || activeSidebarTab === 'ai') {
+        activeSidebarTab = 'audit';
+      }
+    }
+  }
+}
+applyWorkspaceState(false);
+
 /** 把当前面板折叠 / 页签状态写入本地存储，刷新后恢复 */
 function persistPanelToggles(): void {
   savePanelState({
@@ -95,6 +148,8 @@ function persistPanelToggles(): void {
     activeTab: activeSidebarTab,
     collapsedCards: Array.from(collapsedCards),
     collapsedDockSections: Array.from(collapsedDockSections),
+    workspaceMode,
+    modeLayouts: { ...modeLayouts },
   });
 }
 
@@ -136,7 +191,7 @@ app.innerHTML = `
       <!-- Center Viewports -->
       <main class="viewport-stage">
         <div class="overlay-bar" id="overlay-bar"></div>
-        <div class="viewports-grid layout-split_3d_2d" id="viewports-grid">
+        <div class="viewports-grid layout-${store.layout}" id="viewports-grid">
           <!-- 3D Viewport -->
           <div class="viewport-pane vp-3d">
             <div class="vp-header">
@@ -180,6 +235,9 @@ app.innerHTML = `
 
         <!-- Floating Object Identity & Design Rationale HUD Card (Click-to-Inspect) -->
         <div class="floating-note-card" id="floating-note-card"></div>
+
+        <!-- 专注模式下唯一保留的极简工具条 -->
+        <div class="focus-strip" id="focus-strip"></div>
       </main>
 
       <div class="dock-resizer-v" id="resizer-right-sidebar" title="拖拽调整右侧属性栏宽度 · 双击恢复默认"></div>
@@ -210,6 +268,17 @@ app.innerHTML = `
       <div class="theme-studio-panel" id="theme-studio-panel"></div>
     </div>
 
+    <!-- 顶栏"菜单"弹出层：低频操作（新建 / 模板 / 导入导出 / 主题 / 语言）都收在这里 -->
+    <div class="app-menu" id="app-menu" role="menu"></div>
+
+    <!-- 命令面板 (Ctrl+K)：按名称搜索任何操作 -->
+    <div class="cmd-backdrop" id="cmd-backdrop">
+      <div class="cmd-palette" role="dialog" aria-label="命令面板">
+        <input id="cmd-input" class="cmd-input" type="text" autocomplete="off" spellcheck="false" placeholder="搜索操作、模板、工具…" />
+        <div class="cmd-list" id="cmd-list"></div>
+      </div>
+    </div>
+
     <!-- Keyboard Shortcut Cheat Sheet (press ?) -->
     <div class="shortcut-backdrop" id="shortcut-backdrop">
       <div class="shortcut-panel" id="shortcut-panel" role="dialog" aria-label="快捷键一览"></div>
@@ -220,6 +289,79 @@ app.innerHTML = `
 const vp3D = new Viewport3D(document.getElementById('vp-3d-body')!, store);
 const vpTop = new ViewportTop2D(document.getElementById('vp-top-body')!, store);
 const vpSec = new ViewportSection2D(document.getElementById('vp-sec-body')!, store);
+
+function resizeAllViewports(): void {
+  vp3D.resize();
+  vpTop.resize();
+  vpSec.resize();
+}
+
+/** 视口布局立刻生效（不等下一帧重绘），并让刚显示出来的视口按新尺寸重排 */
+function applyViewportLayout(): void {
+  document.getElementById('viewports-grid')!.className = `viewports-grid layout-${store.layout}`;
+  resizeAllViewports();
+  window.setTimeout(resizeAllViewports, 30);
+}
+
+function setWorkspaceMode(mode: WorkspaceMode): void {
+  if (mode === workspaceMode) return;
+  modeLayouts[workspaceMode] = store.layout;
+  workspaceMode = mode;
+  applyWorkspaceState(true);
+  persistPanelToggles();
+  applyViewportLayout();
+  store.notify(false);
+  const content = document.getElementById('sidebar-content');
+  if (content) staggerIn(content);
+}
+
+/** 专注模式：收起所有面板，只留视口和一条极简工具条 */
+function setFocusMode(on: boolean): void {
+  if (on === isFocusMode) return;
+  isFocusMode = on;
+  document.getElementById('workbench')!.classList.toggle('focus-mode', on);
+  renderFocusStrip();
+  runEveryFrameFor(200, resizeAllViewports);
+  if (on) showToast('已进入专注模式 · 按 \\ 退出', { duration: 2200 });
+}
+
+function renderFocusStrip(): void {
+  const strip = document.getElementById('focus-strip')!;
+  if (!isFocusMode) {
+    if (strip.childElementCount) strip.innerHTML = '';
+    return;
+  }
+  const tool = store.activeTool;
+  const tf = store.transformMode;
+  const selOn = (mode: string) => (tool === 'select' && tf === mode ? 'active' : '');
+  patchTarget(strip).html = `
+    <button class="focus-btn ${selOn('translate')}" data-focus-act="translate" title="平移 (W)">✥</button>
+    <button class="focus-btn ${selOn('rotate')}" data-focus-act="rotate" title="旋转 (E)">⟳</button>
+    <button class="focus-btn ${selOn('scale')}" data-focus-act="scale" title="缩放 (R)">⤢</button>
+    <button class="focus-btn ${tool === 'draw_box' ? 'active' : ''}" data-focus-act="draw_box" title="绘制体块 (B)">▣</button>
+    <span class="focus-sep"></span>
+    <button class="focus-btn" data-focus-act="undo" title="撤销 (Ctrl+Z)">↶</button>
+    <button class="focus-btn" data-focus-act="redo" title="重做 (Ctrl+Y)">↷</button>
+    <span class="focus-sep"></span>
+    <button class="focus-btn focus-exit" data-focus-act="exit" title="退出专注模式 (\\)">退出专注 <kbd>\\</kbd></button>
+  `;
+}
+
+document.getElementById('focus-strip')!.addEventListener('click', (e) => {
+  const act = (e.target as HTMLElement).closest<HTMLElement>('[data-focus-act]')?.dataset.focusAct;
+  if (!act) return;
+  if (act === 'exit') setFocusMode(false);
+  else if (act === 'undo') store.undo();
+  else if (act === 'redo') store.redo();
+  else if (act === 'draw_box') {
+    store.activeTool = 'draw_box';
+    store.notify(false);
+  } else {
+    store.transformMode = act as typeof store.transformMode;
+    store.activeTool = 'select';
+    store.notify(false);
+  }
+});
 
 store.onFrameSelected(() => {
   vp3D.frameSelected();
@@ -598,6 +740,269 @@ function withFocusPreserved(container: HTMLElement, render: () => void): void {
   }
 }
 
+// ---- 命令表：顶栏菜单和命令面板共用同一份 ----
+interface AppCommand {
+  id: string;
+  label: string;
+  group: string;
+  /** 右侧显示的快捷键提示 */
+  hint?: string;
+  /** 是否出现在顶栏"菜单"里（其余只能在命令面板里搜到） */
+  menu?: boolean;
+  run: () => void;
+}
+
+function openThemeStudio(): void {
+  if (isThemeStudioOpen) return;
+  isThemeStudioOpen = true;
+  renderThemeStudio();
+  const backdropEl = document.getElementById('theme-studio-backdrop')!;
+  backdropEl.classList.add('intro');
+  window.setTimeout(() => backdropEl.classList.remove('intro'), 520);
+}
+
+function getCommands(): AppCommand[] {
+  const setTool = (tool: ActiveTool) => () => {
+    setWorkspaceMode(ANALYSIS_TOOLS.includes(tool) ? 'analyze' : tool === 'select' ? workspaceMode : 'build');
+    store.activeTool = tool;
+    store.notify(false);
+  };
+  const setLayout = (layout: ViewportLayout) => () => {
+    store.layout = layout;
+    modeLayouts[workspaceMode] = layout;
+    persistPanelToggles();
+    applyViewportLayout();
+    store.notify(false);
+  };
+  const lang = (code: LangCode) => () => {
+    setLang(code);
+    renderAllUI();
+  };
+  const cmds: AppCommand[] = [
+    { id: 'new-starter', group: '新建场景', menu: true, label: `📐 ${t('newSceneEmpty')}`, run: () => store.setDocument(createStarterLevel(), true, true) },
+    { id: 'new-zero', group: '新建场景', menu: true, label: `📄 ${t('newSceneZero')}`, run: () => store.setDocument(createEmptyLevel(), true, true) },
+
+    { id: 'tpl-courtyard', group: '示范关卡', menu: true, label: t('tplCourtyard'), run: () => store.setDocument(createTacticalCourtyardLevel(), true, true) },
+    { id: 'tpl-ruins', group: '示范关卡', menu: true, label: t('tplRuins'), run: () => store.setDocument(createVerticalRuinsLevel(), true, true) },
+    {
+      id: 'tpl-library',
+      group: '示范关卡',
+      menu: true,
+      label: '🏗️ 房间模板库…',
+      run: () => {
+        setWorkspaceMode('build');
+        activeSidebarTab = 'ai';
+        if (isRightSidebarCollapsed) document.getElementById('btn-toggle-right-sidebar')!.click();
+        persistPanelToggles();
+        renderSidebarTabs();
+        renderSidebar();
+      },
+    },
+
+    { id: 'import-json', group: '导入 / 导出', menu: true, label: t('importJSON'), run: () => fileInput.click() },
+    { id: 'export-json', group: '导入 / 导出', menu: true, label: t('exportJSON'), run: () => exportLevelJSON(store.doc) },
+    { id: 'export-md', group: '导入 / 导出', menu: true, label: t('exportMD'), run: () => exportDesignDocMarkdown(store.doc) },
+    { id: 'export-svg', group: '导入 / 导出', menu: true, label: t('exportSVG'), run: () => exportBlueprintSVG(store.doc) },
+    { id: 'export-glb', group: '导入 / 导出', menu: true, label: t('exportGLB'), run: () => exportLevelGLB(vp3D.scene, store.doc) },
+    { id: 'export-obj', group: '导入 / 导出', menu: true, label: t('exportOBJ'), run: () => exportLevelOBJ(store.doc) },
+    { id: 'export-unity', group: '导入 / 导出', menu: true, label: t('exportUnity'), run: () => exportUnityCS(store.doc) },
+
+    { id: 'theme', group: '界面', menu: true, label: '🎨 主题配色…', run: openThemeStudio },
+    { id: 'shortcuts', group: '界面', menu: true, label: '⌨ 快捷键一览', hint: '?', run: () => setShortcutPanelOpen(true) },
+    { id: 'focus', group: '界面', menu: true, label: '⛶ 专注模式', hint: '\\', run: () => setFocusMode(!isFocusMode) },
+    { id: 'lang-zh', group: '语言 / Language', menu: true, label: '🌐 中文', run: lang('zh') },
+    { id: 'lang-en', group: '语言 / Language', menu: true, label: '🌐 English', run: lang('en') },
+    { id: 'lang-ja', group: '语言 / Language', menu: true, label: '🌐 日本語', run: lang('ja') },
+
+    { id: 'ws-build', group: '工作区', label: t('wsBuild'), hint: '1', run: () => setWorkspaceMode('build') },
+    { id: 'ws-analyze', group: '工作区', label: t('wsAnalyze'), hint: '2', run: () => setWorkspaceMode('analyze') },
+    { id: 'playtest', group: '工作区', label: store.isPlaytesting ? t('playtestStop') : t('playtestStart'), hint: 'Tab', run: () => (store.isPlaytesting ? vp3D.stopPlaytest() : vp3D.startPlaytest()) },
+    {
+      id: 'sim-patrol',
+      group: '工作区',
+      label: store.isSimulatingEnemies ? t('simPatrolStop') : t('simPatrolStart'),
+      run: () => {
+        store.isSimulatingEnemies = !store.isSimulatingEnemies;
+        store.notify(false);
+      },
+    },
+
+    { id: 'layout-split', group: '视口布局', label: t('layoutSplit'), run: setLayout('split_3d_2d') },
+    { id: 'layout-3d', group: '视口布局', label: t('layout3D'), run: setLayout('only_3d') },
+    { id: 'layout-top', group: '视口布局', label: t('layoutTop'), run: setLayout('only_top') },
+    { id: 'layout-sec', group: '视口布局', label: t('layoutSec'), run: setLayout('only_section') },
+
+    { id: 'undo', group: '编辑', label: t('undo'), hint: 'Ctrl Z', run: () => store.undo() },
+    { id: 'redo', group: '编辑', label: t('redo'), hint: 'Ctrl Y', run: () => store.redo() },
+    { id: 'frame', group: '编辑', label: t('btnFrameSel'), hint: 'F', run: () => store.requestFrameSelected() },
+
+    { id: 'tool-select', group: '工具', label: t('toolSelect'), hint: 'Q', run: setTool('select') },
+    { id: 'tool-box', group: '工具', label: t('toolBox'), hint: 'B', run: setTool('draw_box') },
+    { id: 'tool-ramp', group: '工具', label: t('toolRamp'), run: setTool('draw_ramp') },
+    { id: 'tool-stairs', group: '工具', label: t('toolStairs'), run: setTool('draw_stairs') },
+    { id: 'tool-arch', group: '工具', label: t('toolArch'), run: setTool('draw_arch') },
+    { id: 'tool-cylinder', group: '工具', label: t('toolCylinder'), run: setTool('draw_cylinder') },
+    { id: 'tool-section', group: '工具', label: t('toolSection'), run: setTool('edit_section') },
+    { id: 'tool-jump', group: '工具', label: t('toolJump'), run: setTool('measure_jump') },
+    { id: 'tool-ruler', group: '工具', label: t('toolRuler'), run: setTool('measure_ruler') },
+    { id: 'tool-poi', group: '工具', label: t('toolPOI'), run: setTool('place_poi') },
+    { id: 'tool-path', group: '工具', label: t('toolPath'), run: setTool('draw_path') },
+  ];
+  for (const r of ROOM_TEMPLATES) {
+    cmds.push({
+      id: `room-${r.id}`,
+      group: '房间模板',
+      label: `${r.icon} ${r.nameZh}`,
+      run: () => store.setDocument(createSceneFromRoomTemplate(r.id), true, true),
+    });
+  }
+  return cmds;
+}
+
+function escapeHTML(text: string): string {
+  return text.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+}
+
+function commandRowHTML(c: AppCommand, extraClass = ''): string {
+  return `<button type="button" class="menu-item ${extraClass}" data-cmd="${c.id}" role="menuitem"><span class="menu-label">${escapeHTML(c.label)}</span>${c.hint ? `<kbd>${escapeHTML(c.hint)}</kbd>` : ''}</button>`;
+}
+
+function groupCommands(cmds: AppCommand[]): [string, AppCommand[]][] {
+  const groups = new Map<string, AppCommand[]>();
+  for (const c of cmds) {
+    if (!groups.has(c.group)) groups.set(c.group, []);
+    groups.get(c.group)!.push(c);
+  }
+  return Array.from(groups.entries());
+}
+
+function runCommand(id: string | undefined): void {
+  const cmd = getCommands().find((c) => c.id === id);
+  if (cmd) cmd.run();
+}
+
+// ---- 顶栏菜单 ----
+let isAppMenuOpen = false;
+
+function setAppMenuOpen(open: boolean): void {
+  if (open === isAppMenuOpen) return;
+  isAppMenuOpen = open;
+  const menu = document.getElementById('app-menu')!;
+  const btn = document.getElementById('btn-app-menu');
+  btn?.classList.toggle('active', open);
+  if (!open) {
+    menu.classList.remove('open');
+    return;
+  }
+  menu.innerHTML = groupCommands(getCommands().filter((c) => c.menu))
+    .map(([group, items]) => `<div class="menu-group"><div class="menu-group-title">${group}</div>${items.map((c) => commandRowHTML(c)).join('')}</div>`)
+    .join('');
+  const rect = btn?.getBoundingClientRect();
+  menu.style.left = `${Math.max(6, rect?.left ?? 6)}px`;
+  menu.style.top = `${(rect?.bottom ?? 34) + 4}px`;
+  menu.classList.add('open');
+}
+
+document.getElementById('app-menu')!.addEventListener('click', (e) => {
+  const id = (e.target as HTMLElement).closest<HTMLElement>('[data-cmd]')?.dataset.cmd;
+  if (!id) return;
+  setAppMenuOpen(false);
+  runCommand(id);
+});
+window.addEventListener('mousedown', (e) => {
+  if (!isAppMenuOpen) return;
+  const target = e.target as HTMLElement;
+  if (target.closest('#app-menu') || target.closest('#btn-app-menu')) return;
+  setAppMenuOpen(false);
+});
+
+// ---- 命令面板 (Ctrl+K) ----
+let cmdResults: AppCommand[] = [];
+let cmdActiveIndex = 0;
+
+function isCommandPaletteOpen(): boolean {
+  return document.getElementById('cmd-backdrop')!.classList.contains('open');
+}
+
+function renderCommandResults(): void {
+  const input = document.getElementById('cmd-input') as HTMLInputElement;
+  const list = document.getElementById('cmd-list')!;
+  const tokens = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+  cmdResults = getCommands().filter((c) => {
+    const hay = `${c.label} ${c.group} ${c.id}`.toLowerCase();
+    return tokens.every((tok) => hay.includes(tok));
+  });
+  cmdActiveIndex = Math.min(cmdActiveIndex, Math.max(0, cmdResults.length - 1));
+  if (!cmdResults.length) {
+    list.innerHTML = '<div class="cmd-empty">没有匹配的操作</div>';
+    return;
+  }
+  let idx = 0;
+  list.innerHTML = groupCommands(cmdResults)
+    .map(
+      ([group, items]) =>
+        `<div class="menu-group"><div class="menu-group-title">${group}</div>${items
+          .map((c) => commandRowHTML(c, idx++ === cmdActiveIndex ? 'active' : ''))
+          .join('')}</div>`
+    )
+    .join('');
+  // groupCommands 保持了原有顺序，面板里的键盘序号按分组后的显示顺序重排
+  cmdResults = groupCommands(cmdResults).flatMap(([, items]) => items);
+  list.querySelector('.menu-item.active')?.scrollIntoView({ block: 'nearest' });
+}
+
+function setCommandPaletteOpen(open: boolean): void {
+  const backdrop = document.getElementById('cmd-backdrop')!;
+  if (open === isCommandPaletteOpen()) return;
+  backdrop.classList.toggle('open', open);
+  const input = document.getElementById('cmd-input') as HTMLInputElement;
+  if (open) {
+    setAppMenuOpen(false);
+    input.value = '';
+    cmdActiveIndex = 0;
+    renderCommandResults();
+    input.focus();
+  } else {
+    input.blur();
+  }
+}
+
+document.getElementById('cmd-input')!.addEventListener('input', () => {
+  cmdActiveIndex = 0;
+  renderCommandResults();
+});
+document.getElementById('cmd-input')!.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!cmdResults.length) return;
+    cmdActiveIndex = (cmdActiveIndex + (e.key === 'ArrowDown' ? 1 : -1) + cmdResults.length) % cmdResults.length;
+    renderCommandResults();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const cmd = cmdResults[cmdActiveIndex];
+    setCommandPaletteOpen(false);
+    cmd?.run();
+  }
+});
+document.getElementById('cmd-list')!.addEventListener('click', (e) => {
+  const id = (e.target as HTMLElement).closest<HTMLElement>('[data-cmd]')?.dataset.cmd;
+  if (!id) return;
+  setCommandPaletteOpen(false);
+  runCommand(id);
+});
+document.getElementById('cmd-backdrop')!.addEventListener('mousedown', (e) => {
+  if (e.target === e.currentTarget) setCommandPaletteOpen(false);
+});
+window.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !store.isPlaytesting) {
+    e.preventDefault();
+    setCommandPaletteOpen(!isCommandPaletteOpen());
+  } else if (e.key === 'Escape') {
+    if (isCommandPaletteOpen()) setCommandPaletteOpen(false);
+    else if (isAppMenuOpen) setAppMenuOpen(false);
+  }
+});
+
 function renderTopBar(): void {
   withFocusPreserved(document.getElementById('topbar')!, renderTopBarNow);
 }
@@ -612,6 +1017,7 @@ function renderTopBarNow(): void {
       <button id="btn-toggle-left-dock" class="btn btn-icon" title="折叠/展开左侧工具栏">
         ${isLeftDockCollapsed ? '▶ 工具' : '◀'}
       </button>
+      <button id="btn-app-menu" class="btn" title="菜单：新建 / 模板 / 导入导出 / 主题 / 语言">${iconLabel('☰ 菜单')}</button>
       <div class="brand-logo">
         <span class="brand-badge">LB</span>
         <span>Level Builder</span>
@@ -625,14 +1031,6 @@ function renderTopBarNow(): void {
         <button class="dim-mode-btn ${dim === '2d_side' ? 'active' : ''}" data-dim="2d_side" title="${t('dim2DSide')}">${iconLabel(t('dim2DSide'))}</button>
         <button class="dim-mode-btn ${dim === '2d_topdown' ? 'active' : ''}" data-dim="2d_topdown" title="${t('dim2DTop')}">${iconLabel(t('dim2DTop'))}</button>
       </div>
-      
-      <!-- Dedicated New Scene Menu -->
-      <span class="topbar-sep"></span>
-      <select id="new-scene-select" class="select-pill select-accent" title="${t('newSceneBtn')}">
-        <option value="">${t('newSceneBtn')}...</option>
-        <option value="starter">📐 ${t('newSceneEmpty')}</option>
-        <option value="zero">📄 ${t('newSceneZero')}</option>
-      </select>
 
       <select id="template-select" class="select-pill" title="${t('templatePlaceholder')}">
         <option value="">${t('templatePlaceholder')}</option>
@@ -654,6 +1052,10 @@ function renderTopBarNow(): void {
     </div>
 
     <div class="topbar-center">
+      <div class="dim-mode-bar workspace-switch" title="工作区预设：切换搭建/分析重心，无损保留全部页签与工具">
+        <button class="dim-mode-btn ${workspaceMode === 'build' ? 'active' : ''}" data-ws="build" title="${t('wsBuildTip')}">${iconLabel(t('wsBuild'))}</button>
+        <button class="dim-mode-btn ${workspaceMode === 'analyze' ? 'active' : ''}" data-ws="analyze" title="${t('wsAnalyzeTip')}">${iconLabel(t('wsAnalyze'))}</button>
+      </div>
       <select id="layout-select" class="select-pill" title="视口布局">
         <option value="split_3d_2d" ${store.layout === 'split_3d_2d' ? 'selected' : ''}>${t('layoutSplit')}</option>
         <option value="only_3d" ${store.layout === 'only_3d' ? 'selected' : ''}>${t('layout3D')}</option>
@@ -673,31 +1075,16 @@ function renderTopBarNow(): void {
 
     <div class="topbar-right">
       <button id="btn-open-theme-studio" class="btn ${isThemeStudioOpen ? 'active' : ''}" title="主题配色：切换界面颜色模板与自定义色板">
-        ${iconLabel('🎨 主题配色')}
+        ${iconLabel('🎨 主题')}
       </button>
-
-      <select id="export-select" class="select-pill" title="${t('exportMenu')}">
-        <option value="">${t('exportMenu')}</option>
-        <option value="import_json">${t('importJSON')}</option>
-        <option value="md">${t('exportMD')}</option>
-        <option value="svg">${t('exportSVG')}</option>
-        <option value="glb">${t('exportGLB')}</option>
-        <option value="obj">${t('exportOBJ')}</option>
-        <option value="unity_cs">${t('exportUnity')}</option>
-        <option value="json">${t('exportJSON')}</option>
-      </select>
-
-      <!-- Multi-Language Switcher -->
-      <select id="lang-select" class="select-pill" title="Language / 语言 / 言語">
-        <option value="zh" ${lang === 'zh' ? 'selected' : ''}>🌐 中文</option>
-        <option value="en" ${lang === 'en' ? 'selected' : ''}>🌐 EN</option>
-        <option value="ja" ${lang === 'ja' ? 'selected' : ''}>🌐 日本語</option>
-      </select>
+      <button id="btn-cmd-palette" class="btn" title="命令面板：搜索任何操作 (Ctrl+K)">${iconLabel('🔍 搜索')}<kbd class="kbd-hint">Ctrl K</kbd></button>
 
       <div id="bridge-status" class="bridge-pill ${store.bridgeConnected || store.isOnlineStaticHost() ? '' : 'offline'}" title="${store.bridgeConnected ? t('bridgeOnline') : store.isOnlineStaticHost() ? '在线版' : t('bridgeOffline')}">
         <span class="dot"></span>
         <span id="bridge-text">${store.bridgeConnected ? t('bridgeOnline') : store.isOnlineStaticHost() ? '🌐 在线版' : t('bridgeOffline')}</span>
       </div>
+
+      <button id="btn-focus-mode" class="btn btn-icon" title="${t('focusModeTip')}">⛶</button>
 
       <button id="btn-toggle-right-sidebar" class="btn btn-icon" title="折叠/展开右侧属性分析栏">
         ${isRightSidebarCollapsed ? '◀ 属性' : '▶'}
@@ -731,32 +1118,28 @@ function renderTopBarNow(): void {
     });
   };
 
+  topbar.querySelectorAll<HTMLButtonElement>('[data-ws]').forEach((btn) => {
+    btn.onclick = () => setWorkspaceMode(btn.dataset.ws as WorkspaceMode);
+  });
+  document.getElementById('btn-focus-mode')!.onclick = () => setFocusMode(true);
+
   topbar.querySelectorAll<HTMLButtonElement>('[data-dim]').forEach((btn) => {
     btn.onclick = () => {
       const nextDim = btn.dataset.dim as GameDimensionMode;
       store.setDimensionMode(nextDim);
-      setTimeout(() => {
-        vp3D.resize();
-        vpTop.resize();
-        vpSec.resize();
-      }, 30);
+      // 搭建模式的单主视口跟着关卡维度走：3D → 3D 视口，横版 → 断面，俯视 → 俯视图
+      if (workspaceMode === 'build') {
+        store.layout = defaultLayoutFor('build');
+        modeLayouts.build = store.layout;
+        persistPanelToggles();
+      }
+      applyViewportLayout();
     };
   });
 
   document.getElementById('level-name-input')!.onchange = (e) => {
     store.doc.metadata.name = (e.target as HTMLInputElement).value;
     store.notify(true);
-  };
-
-  document.getElementById('new-scene-select')!.onchange = (e) => {
-    const sel = e.target as HTMLSelectElement;
-    const val = sel.value;
-    sel.value = '';
-    if (val === 'starter') {
-      store.setDocument(createStarterLevel(), true, true);
-    } else if (val === 'zero') {
-      store.setDocument(createEmptyLevel(), true, true);
-    }
   };
 
   document.getElementById('template-select')!.onchange = (e) => {
@@ -773,72 +1156,56 @@ function renderTopBarNow(): void {
     }
   };
 
+  document.getElementById('btn-open-theme-studio')!.onclick = () => {
+    if (isThemeStudioOpen) {
+      closeThemeStudio();
+      return;
+    }
+    openThemeStudio();
+    renderTopBar();
+  };
+
+  document.getElementById('btn-app-menu')!.onclick = (e) => {
+    e.stopPropagation();
+    setAppMenuOpen(!isAppMenuOpen);
+  };
+  document.getElementById('btn-cmd-palette')!.onclick = () => setCommandPaletteOpen(true);
+
   document.getElementById('layout-select')!.onchange = (e) => {
     store.layout = (e.target as HTMLSelectElement).value as ViewportLayout;
+    modeLayouts[workspaceMode] = store.layout;
+    persistPanelToggles();
+    applyViewportLayout();
     store.notify(false);
-    setTimeout(() => {
-      vp3D.resize();
-      vpTop.resize();
-      vpSec.resize();
-    }, 30);
   };
 
   document.getElementById('btn-undo')!.onclick = () => store.undo();
   document.getElementById('btn-redo')!.onclick = () => store.redo();
 
-  document.getElementById('btn-sim-patrol')!.onclick = () => {
-    store.isSimulatingEnemies = !store.isSimulatingEnemies;
-    store.notify(false);
-  };
+  const simBtn = document.getElementById('btn-sim-patrol');
+  if (simBtn) {
+    simBtn.onclick = () => {
+      store.isSimulatingEnemies = !store.isSimulatingEnemies;
+      store.notify(false);
+    };
+  }
 
   document.getElementById('btn-playtest')!.onclick = () => {
     if (store.isPlaytesting) vp3D.stopPlaytest();
     else vp3D.startPlaytest();
   };
 
-  const fileInput = document.getElementById('file-import-input') as HTMLInputElement;
-  document.getElementById('export-select')!.onchange = (e) => {
-    const sel = e.target as HTMLSelectElement;
-    const val = sel.value;
-    sel.value = '';
-    if (val === 'import_json') fileInput.click();
-    if (val === 'md') exportDesignDocMarkdown(store.doc);
-    if (val === 'glb') exportLevelGLB(vp3D.scene, store.doc);
-    if (val === 'obj') exportLevelOBJ(store.doc);
-    if (val === 'unity_cs') exportUnityCS(store.doc);
-    if (val === 'svg') exportBlueprintSVG(store.doc);
-    if (val === 'json') exportLevelJSON(store.doc);
-  };
-
-  document.getElementById('lang-select')!.onchange = (e) => {
-    setLang((e.target as HTMLSelectElement).value as LangCode);
-    renderAllUI();
-  };
-
-  document.getElementById('btn-open-theme-studio')!.onclick = () => {
-    if (isThemeStudioOpen) {
-      closeThemeStudio();
-      return;
-    }
-    isThemeStudioOpen = true;
-    renderThemeStudio();
-    renderTopBar();
-    const backdropEl = document.getElementById('theme-studio-backdrop')!;
-    backdropEl.classList.add('intro');
-    window.setTimeout(() => backdropEl.classList.remove('intro'), 520);
-  };
-
   // Update viewport headers
   document.getElementById('vp3d-title')!.textContent = t('vp3DHeader');
-  document.getElementById('btn-pip3d')!.textContent = t('vp3DPiP');
+  document.getElementById('btn-pip3d')!.innerHTML = iconLabel(t('vp3DPiP'));
   document.getElementById('btn-pip3d')!.classList.toggle('on', vp3D.showPlayerPiP);
-  document.getElementById('btn-clip3d')!.textContent = t('vp3DClip');
+  document.getElementById('btn-clip3d')!.innerHTML = iconLabel(t('vp3DClip'));
   document.getElementById('btn-clip3d')!.classList.toggle('on', Boolean(store.doc.sectionPlane.clip3D));
   document.getElementById('btn-reset-3d')!.textContent = t('vpResetCam');
   document.getElementById('vptop-title')!.textContent = t('vpTopHeader');
   document.getElementById('btn-reset-top')!.textContent = t('vpResetCam');
   document.getElementById('vpsec-title')!.textContent = t('vpSecHeader');
-  document.getElementById('btn-flip-sec')!.textContent = t('vpSecFlip');
+  document.getElementById('btn-flip-sec')!.innerHTML = iconLabel(t('vpSecFlip'));
   document.getElementById('btn-reset-sec')!.textContent = t('vpResetCam');
   document.getElementById('status-right')!.textContent = t('statusShortcuts');
   document.getElementById('status-right')!.title = t('statusShortcuts');
@@ -878,12 +1245,19 @@ document.fonts?.ready.then(() => fitTopBar(true));
 
 function renderSidebarTabs(): void {
   const tabsEl = document.getElementById('sidebar-tabs')!;
-  patchTarget(tabsEl).html = `
-    <button class="tab-btn ${activeSidebarTab === 'inspector' ? 'active' : ''}" data-tab="inspector">${t('tabInspector')}</button>
-    <button class="tab-btn ${activeSidebarTab === 'metrics' ? 'active' : ''}" data-tab="metrics">${t('tabMetrics')}</button>
-    <button class="tab-btn ${activeSidebarTab === 'audit' ? 'active' : ''}" data-tab="audit">${t('tabAudit')}</button>
-    <button class="tab-btn ${activeSidebarTab === 'ai' ? 'active' : ''}" data-tab="ai">${t('tabAI')}</button>
-  `;
+  const tabLabels: Record<SidebarTab, string> = {
+    inspector: t('tabInspector'),
+    metrics: t('tabMetrics'),
+    audit: t('tabAudit'),
+    ai: t('tabAI'),
+  };
+  const allTabs: SidebarTab[] = ['inspector', 'metrics', 'audit', 'ai'];
+  patchTarget(tabsEl).html = allTabs
+    .map(
+      (tab) =>
+        `<button class="tab-btn ${activeSidebarTab === tab ? 'active' : ''}" data-tab="${tab}" data-key="tab-${tab}">${tabLabels[tab]}</button>`
+    )
+    .join('');
   tabsEl.querySelectorAll<HTMLButtonElement>('.tab-btn').forEach((btn) => {
     btn.onclick = () => {
       if (activeSidebarTab === btn.dataset.tab) return;
@@ -908,7 +1282,7 @@ function renderLeftDockNow(): void {
   const cd = store.creationDefaults;
 
   patchTarget(dock, prepareDockMarkup).html = `
-    <div class="dock-section ${collapsedDockSections.has('sec1') ? 'collapsed' : ''}" data-dock-sec="sec1">
+    <div class="dock-section ${collapsedDockSections.has('sec1') ? 'collapsed' : ''}" data-dock-sec="sec1" data-key="dock-sec1">
       <div class="dock-section-header">
         <span>${t('sec1Title')}</span>
         <span class="collapse-chevron">▾</span>
@@ -934,7 +1308,7 @@ function renderLeftDockNow(): void {
       </div>
     </div>
 
-    <div class="dock-section ${collapsedDockSections.has('sec2') ? 'collapsed' : ''}" data-dock-sec="sec2">
+    <div class="dock-section ${collapsedDockSections.has('sec2') ? 'collapsed' : ''}" data-dock-sec="sec2" data-key="dock-sec2">
       <div class="dock-section-header">
         <span>${t('sec2Title')}</span>
         <span class="collapse-chevron">▾</span>
@@ -981,7 +1355,7 @@ function renderLeftDockNow(): void {
       </div>
     </div>
 
-    <div class="dock-section ${collapsedDockSections.has('sec_role') ? 'collapsed' : ''}" data-dock-sec="sec_role">
+    <div class="dock-section ${collapsedDockSections.has('sec_role') ? 'collapsed' : ''}" data-dock-sec="sec_role" data-key="dock-sec_role">
       <div class="dock-section-header">
         <span>${t('roleTitle')}</span>
         <span class="collapse-chevron">▾</span>
@@ -1020,7 +1394,7 @@ function renderLeftDockNow(): void {
       </div>
     </div>
 
-    <div class="dock-section ${collapsedDockSections.has('sec3') ? 'collapsed' : ''}" data-dock-sec="sec3">
+    <div class="dock-section ${collapsedDockSections.has('sec3') ? 'collapsed' : ''}" data-dock-sec="sec3" data-key="dock-sec3">
       <div class="dock-section-header">
         <span>${t('sec3Title')}</span>
         <span class="collapse-chevron">▾</span>
@@ -1267,13 +1641,13 @@ function renderOverlayBar(): void {
   patchTarget(bar).html = `
     <div class="overlay-group">
       <span style="color:var(--text-muted);font-weight:600;font-size:10px;">${t('ovLabel')}</span>
-      <button class="chip-toggle ${ov.showGrid ? 'on' : ''}" data-ov="showGrid">${t('ovGrid')}</button>
-      <button class="chip-toggle ${ov.showVisionCones ? 'on' : ''}" data-ov="showVisionCones">${t('ovVision')}</button>
-      <button class="chip-toggle ${ov.showFlowPaths ? 'on' : ''}" data-ov="showFlowPaths">${t('ovFlow')}</button>
-      <button class="chip-toggle ${ov.showJumpArcs ? 'on' : ''}" data-ov="showJumpArcs">${t('ovJump')}</button>
-      <button class="chip-toggle ${ov.showDesignNotes ? 'on' : ''}" data-ov="showDesignNotes">${t('ovNotes')}</button>
-      <button class="chip-toggle ${ov.showScaleHuman ? 'on' : ''}" data-ov="showScaleHuman">${t('ovHuman')}</button>
-      <button class="chip-toggle ${ov.elevationHeatmap ? 'on' : ''}" data-ov="elevationHeatmap">${t('ovHeat')}</button>
+      <button class="chip-toggle ${ov.showGrid ? 'on' : ''}" data-ov="showGrid" data-key="ov-showGrid">${t('ovGrid')}</button>
+      <button class="chip-toggle ${ov.showVisionCones ? 'on' : ''}" data-ov="showVisionCones" data-key="ov-showVisionCones">${t('ovVision')}</button>
+      <button class="chip-toggle ${ov.showFlowPaths ? 'on' : ''}" data-ov="showFlowPaths" data-key="ov-showFlowPaths">${t('ovFlow')}</button>
+      <button class="chip-toggle ${ov.showJumpArcs ? 'on' : ''}" data-ov="showJumpArcs" data-key="ov-showJumpArcs">${t('ovJump')}</button>
+      <button class="chip-toggle ${ov.showDesignNotes ? 'on' : ''}" data-ov="showDesignNotes" data-key="ov-showDesignNotes">${t('ovNotes')}</button>
+      <button class="chip-toggle ${ov.showScaleHuman ? 'on' : ''}" data-ov="showScaleHuman" data-key="ov-showScaleHuman">${t('ovHuman')}</button>
+      <button class="chip-toggle ${ov.elevationHeatmap ? 'on' : ''}" data-ov="elevationHeatmap" data-key="ov-elevationHeatmap">${t('ovHeat')}</button>
     </div>
 
     <div class="overlay-group">
@@ -1777,15 +2151,15 @@ function renderInspectorTab(container: HTMLElement): void {
           </div>
           <div class="form-row">
             <label>${t('camCollLbl')}</label>
-            <div style="display:flex;align-items:center;gap:10px;">
-              <input type="checkbox" id="ins-pcam-coll" ${(mp.cameraCollision ?? true) ? 'checked' : ''} style="width:16px;height:16px;" />
-              <span style="font-size:10px;color:var(--text-muted);">${t('showCamFrustumLbl')}</span>
-              <input type="checkbox" id="ins-pcam-frustum" ${(mp.showPlayerCameraFrustum ?? true) ? 'checked' : ''} style="width:16px;height:16px;" />
-            </div>
+            <input type="checkbox" id="ins-pcam-coll" ${(mp.cameraCollision ?? true) ? 'checked' : ''} />
+          </div>
+          <div class="form-row">
+            <label>${t('showCamFrustumLbl')}</label>
+            <input type="checkbox" id="ins-pcam-frustum" ${(mp.showPlayerCameraFrustum ?? true) ? 'checked' : ''} />
           </div>
           <div class="form-row">
             <label>${t('showPlayerVisLbl')}</label>
-            <input type="checkbox" id="ins-pvis-show" ${(mp.showPlayerVision ?? true) ? 'checked' : ''} style="width:16px;height:16px;" />
+            <input type="checkbox" id="ins-pvis-show" ${(mp.showPlayerVision ?? true) ? 'checked' : ''} />
           </div>
           <div class="form-row">
             <label>${t('playerVisFovLbl')}</label>
@@ -2289,7 +2663,7 @@ function renderMetricsTab(container: HTMLElement): void {
     max: number,
     step: number
   ) => `
-    <div class="form-row" style="grid-template-columns: 98px 1fr 56px;">
+    <div class="form-row" style="grid-template-columns: 90px 1fr 68px;">
       <label>${t(labelKey)}</label>
       <input type="range" id="${id}-rng" min="${min}" max="${max}" step="${step}" value="${val}" style="accent-color:var(--accent);cursor:pointer;" />
       <input type="number" id="${id}-num" min="${min}" max="${max}" step="${step}" value="${val}" />
@@ -2331,15 +2705,15 @@ function renderMetricsTab(container: HTMLElement): void {
       ${sliderRow('camPitchLbl', 'm-cam-pitch', m.cameraPitch ?? -10, -75, 45, 1)}
       <div class="form-row">
         <label>${t('camCollLbl')}</label>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <input type="checkbox" id="m-cam-coll" ${(m.cameraCollision ?? true) ? 'checked' : ''} style="width:15px;height:15px;" />
-          <span style="font-size:10px;color:var(--text-muted);">${t('showCamFrustumLbl')}</span>
-          <input type="checkbox" id="m-cam-frust" ${(m.showPlayerCameraFrustum ?? true) ? 'checked' : ''} style="width:15px;height:15px;" />
-        </div>
+        <input type="checkbox" id="m-cam-coll" ${(m.cameraCollision ?? true) ? 'checked' : ''} />
+      </div>
+      <div class="form-row">
+        <label>${t('showCamFrustumLbl')}</label>
+        <input type="checkbox" id="m-cam-frust" ${(m.showPlayerCameraFrustum ?? true) ? 'checked' : ''} />
       </div>
       <div class="form-row">
         <label>${t('showPlayerVisLbl')}</label>
-        <input type="checkbox" id="m-pvis-show" ${(m.showPlayerVision ?? true) ? 'checked' : ''} style="width:15px;height:15px;" />
+        <input type="checkbox" id="m-pvis-show" ${(m.showPlayerVision ?? true) ? 'checked' : ''} />
       </div>
       ${sliderRow('playerVisFovLbl', 'm-pvis-fov', m.playerVisionFov ?? 95, 30, 160, 2)}
       ${sliderRow('playerVisRangeLbl', 'm-pvis-rng', m.playerVisionRange ?? 26, 5, 60, 1)}
@@ -3075,7 +3449,14 @@ function renderThemeStudio(): void {
 
 function updateStatusBar(): void {
   const gridEl = document.getElementById('viewports-grid')!;
-  gridEl.className = `viewports-grid layout-${store.layout}`;
+  if (gridEl.className !== `viewports-grid layout-${store.layout}`) applyViewportLayout();
+
+  // 试玩时自动收起两侧面板和叠加条，把画面让给视口
+  const workbench = document.getElementById('workbench')!;
+  if (workbench.classList.contains('playtesting') !== store.isPlaytesting) {
+    workbench.classList.toggle('playtesting', store.isPlaytesting);
+    runEveryFrameFor(200, resizeAllViewports);
+  }
 
   const statusLeft = document.getElementById('status-left')!;
   statusLeft.textContent = `${store.lastAILog} | Blocks: ${store.doc.blocks.length} | Sightlines: ${(store.doc.sightlines || []).length} | Section A-A': (${store.doc.sectionPlane.start.join(',')}) → (${store.doc.sectionPlane.end.join(',')})`;
@@ -3168,7 +3549,15 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key.toLowerCase() === 'q' || e.key.toLowerCase() === 'v') {
     store.activeTool = 'select';
     store.notify(false);
+  } else if (e.key === '\\') {
+    e.preventDefault();
+    setFocusMode(!isFocusMode);
+  } else if (e.key === '1' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    setWorkspaceMode('build');
+  } else if (e.key === '2' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    setWorkspaceMode('analyze');
   } else if (e.key.toLowerCase() === 'b') {
+    setWorkspaceMode('build');
     store.activeTool = 'draw_box';
     store.notify(false);
   } else if (e.key.toLowerCase() === 'w') {
@@ -3205,6 +3594,7 @@ function flushUIRender(): void {
   renderOverlayBar();
   renderFloatingNoteCard();
   renderSidebarTabs();
+  renderFocusStrip();
   updateStatusBar();
   toastForLatestLog();
   revealSelectionInOutliner();
@@ -3301,6 +3691,9 @@ const SHORTCUT_GROUPS: { title: string; items: [string, string][] }[] = [
       ['拖拽数值框 / 标签', '连续调节数值'],
       ['拖拽时按 Shift / Alt', '微调 ×0.1 / 快调 ×5'],
       ['双击分隔条', '恢复默认面板尺寸'],
+      ['Ctrl + K', '命令面板：搜索任何操作'],
+      ['1 / 2', '切换 搭建 / 分析 工作区'],
+      ['\\', '专注模式（隐藏全部面板）'],
       ['?', '打开 / 关闭本面板'],
       ['Esc', '关闭弹窗'],
     ],

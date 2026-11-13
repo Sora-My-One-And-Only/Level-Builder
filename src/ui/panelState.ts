@@ -18,6 +18,10 @@ export interface PanelLayoutState {
   activeTab?: string;
   collapsedCards?: string[];
   collapsedDockSections?: string[];
+  /** 当前工作区模式：build（搭建）/ analyze（分析） */
+  workspaceMode?: string;
+  /** 每个工作区模式各自记住的视口布局 */
+  modeLayouts?: Record<string, string>;
 }
 
 export const PANEL_DEFAULTS = {

@@ -2237,7 +2237,7 @@ export class Viewport3D {
       addPart(new THREE.BoxGeometry(w, lintelH, d), [0, h / 2 - lintelH / 2, 0]);
     }
 
-    if (!isTrigger && (this.store.overlays.showDimensions || isSelected) && b.type !== 'stairs' && b.type !== 'arch') {
+    if (!isTrigger && isSelected && b.type !== 'stairs' && b.type !== 'arch') {
       const stencil = this.createBlockDimensionStencilMesh(b);
       if (stencil) group.add(stencil);
     }

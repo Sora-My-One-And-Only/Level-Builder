@@ -1,21 +1,21 @@
 {
   "version": "1.0.0",
   "metadata": {
-    "name": "空白场景 (Empty_Scene)",
+    "name": "双层战术中庭与狙击长廊 (Tactical Courtyard_01)",
     "author": "LevelDesigner",
-    "genre": "Custom 3D Level",
+    "genre": "Tactical Action / TPS",
     "gridSize": 0.5,
     "snapRotation": 15,
-    "targetCompletionTimeSec": 30,
-    "description": "纯空白场景，可在 3D 或 2D 视口从零开始创建白盒。",
-    "updatedAt": "2026-11-06T02:49:28.566Z"
+    "targetCompletionTimeSec": 45,
+    "description": "包含1F掩体交火庭院、东西两侧楼梯/斜坡包抄通道、2F北侧狙击高台与中央断桥跳跃点的标准白盒关卡。",
+    "updatedAt": "2026-11-13T04:28:43.334Z"
   },
   "metricsProfile": {
     "presetName": "第三人称战术射击 / 动作 (TPS Tactical)",
-    "playerHeight": 3.5,
-    "playerRadius": 1.2,
-    "crouchHeight": 0.4,
-    "eyeHeight": 3.2,
+    "playerHeight": 1.8,
+    "playerRadius": 0.4,
+    "crouchHeight": 1,
+    "eyeHeight": 1.65,
     "walkSpeed": 4.5,
     "runSpeed": 7,
     "crouchSpeed": 2.5,
@@ -44,19 +44,670 @@
   },
   "sectionPlane": {
     "start": [
-      -12,
-      0
+      -15,
+      -2
     ],
     "end": [
-      12,
-      0
+      15,
+      -2
     ],
-    "slabDepth": 8,
+    "slabDepth": 10,
     "clip3D": false,
     "flipNormal": false
   },
-  "blocks": [],
-  "paths": [],
-  "pois": [],
-  "jumps": []
+  "blocks": [
+    {
+      "id": "flr_main_courtyard",
+      "name": "1F 中央庭院地面",
+      "type": "box",
+      "role": "walkable",
+      "position": [
+        0,
+        -0.25,
+        2
+      ],
+      "size": [
+        28,
+        0.5,
+        28
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0,
+      "notes": "主交火区基础地面"
+    },
+    {
+      "id": "flr_north_balcony",
+      "name": "2F 北侧狙击高台",
+      "type": "box",
+      "role": "walkable",
+      "position": [
+        0,
+        2.75,
+        -10
+      ],
+      "size": [
+        24,
+        0.5,
+        6
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 1,
+      "notes": "二层制高点，俯瞰整个庭院"
+    },
+    {
+      "id": "flr_west_catwalk",
+      "name": "2F 西侧包抄连廊",
+      "type": "box",
+      "role": "walkable",
+      "position": [
+        -10,
+        2.75,
+        -2
+      ],
+      "size": [
+        4,
+        0.5,
+        10
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 1
+    },
+    {
+      "id": "flr_center_island",
+      "name": "2F 中央悬空平台",
+      "type": "box",
+      "role": "walkable",
+      "position": [
+        -2,
+        2.75,
+        -2
+      ],
+      "size": [
+        5,
+        0.5,
+        4
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 1,
+      "notes": "需要从西侧连廊跳跃抵达的捷径高台"
+    },
+    {
+      "id": "stairs_west_up",
+      "name": "西侧上二楼阶梯",
+      "type": "stairs",
+      "role": "walkable",
+      "position": [
+        -10,
+        1.5,
+        5.5
+      ],
+      "size": [
+        3.5,
+        3,
+        5
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0,
+      "steps": 10
+    },
+    {
+      "id": "ramp_east_flank",
+      "name": "东侧战术斜坡",
+      "type": "ramp",
+      "role": "walkable",
+      "position": [
+        10,
+        1.5,
+        -3.5
+      ],
+      "size": [
+        3.5,
+        3,
+        7
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0,
+      "notes": "坡度约 23.2°，满足 45° 最大爬坡角"
+    },
+    {
+      "id": "arch_south_entry",
+      "name": "南侧出生点大门拱廊",
+      "type": "arch",
+      "role": "wall",
+      "position": [
+        0,
+        2,
+        13
+      ],
+      "size": [
+        8,
+        4,
+        1.5
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0
+    },
+    {
+      "id": "wall_north_back",
+      "name": "北侧封底外墙",
+      "type": "box",
+      "role": "wall",
+      "position": [
+        0,
+        3.5,
+        -13.25
+      ],
+      "size": [
+        28,
+        7,
+        0.5
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 1
+    },
+    {
+      "id": "wall_west_border",
+      "name": "西侧边界护墙",
+      "type": "box",
+      "role": "wall",
+      "position": [
+        -13.75,
+        2.5,
+        2
+      ],
+      "size": [
+        0.5,
+        5,
+        28
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0
+    },
+    {
+      "id": "wall_east_border",
+      "name": "东侧边界护墙",
+      "type": "box",
+      "role": "wall",
+      "position": [
+        13.75,
+        2.5,
+        2
+      ],
+      "size": [
+        0.5,
+        5,
+        28
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0
+    },
+    {
+      "id": "cov_south_low_1",
+      "name": "前排半身掩体 L",
+      "type": "box",
+      "role": "cover_low",
+      "position": [
+        -3.5,
+        0.55,
+        8
+      ],
+      "size": [
+        3.5,
+        1.1,
+        0.8
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0,
+      "designTag": "安全喘息区 (Safe Breather)",
+      "notes": "玩家离开南侧出生拱门后的第一处下蹲安全掩体 (1.1m高)，供玩家观察中庭守卫与2F狙击手位置。",
+      "mechanicsTip": "支持下蹲完全隐蔽与探头射击"
+    },
+    {
+      "id": "cov_south_low_2",
+      "name": "前排半身掩体 R",
+      "type": "box",
+      "role": "cover_low",
+      "position": [
+        3.5,
+        0.55,
+        8
+      ],
+      "size": [
+        3.5,
+        1.1,
+        0.8
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0,
+      "designTag": "安全喘息区 (Safe Breather)",
+      "notes": "右侧推进支点，引导玩家向东侧斜坡包抄路线转移。"
+    },
+    {
+      "id": "cov_center_blocker",
+      "name": "中场全身掩体立柱 (LOS Blocker)",
+      "type": "box",
+      "role": "cover_full",
+      "position": [
+        1.5,
+        1.1,
+        2.5
+      ],
+      "size": [
+        2.5,
+        2.2,
+        2.5
+      ],
+      "rotation": [
+        0,
+        15,
+        0
+      ],
+      "floor": 0,
+      "designTag": "视线阻断 (LOS Blocker)",
+      "notes": "核心视线阻断物 (2.2m高)：故意旋转15°切碎2F北侧狙击手的扇形视野，在中场投射出一片安全推进阴影区。",
+      "mechanicsTip": "不可破坏的实心承重立柱"
+    },
+    {
+      "id": "cov_mid_west",
+      "name": "西侧推进半身掩体",
+      "type": "box",
+      "role": "cover_low",
+      "position": [
+        -4.5,
+        0.55,
+        3
+      ],
+      "size": [
+        3,
+        1.1,
+        1
+      ],
+      "rotation": [
+        0,
+        -15,
+        0
+      ],
+      "floor": 0,
+      "designTag": "侧翼包抄道 (Flank Route)",
+      "notes": "掩护玩家冲向西侧楼梯的跳板掩体。"
+    },
+    {
+      "id": "cov_balcony_rail",
+      "name": "2F 狙击台女墙护栏",
+      "type": "box",
+      "role": "cover_low",
+      "position": [
+        2,
+        3.55,
+        -7.2
+      ],
+      "size": [
+        8,
+        1.1,
+        0.5
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 1,
+      "designTag": "交叉火力区 (Killzone)",
+      "notes": "2F 狙击哨兵依托的正面胸墙，但东西两侧完全敞开，鼓励玩家绕后包抄。"
+    },
+    {
+      "id": "hazard_pit_east",
+      "name": "中场塌陷电网坑",
+      "type": "box",
+      "role": "hazard",
+      "position": [
+        4.5,
+        -0.05,
+        -2
+      ],
+      "size": [
+        4.5,
+        0.3,
+        4
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0,
+      "designTag": "交叉火力区 (Killzone)",
+      "notes": "中场偏东的禁区陷阱，限制玩家无脑直线冲锋，迫使走位分流。"
+    },
+    {
+      "id": "zone_combat_main",
+      "name": "中央交火触发区",
+      "type": "box",
+      "role": "trigger_combat",
+      "position": [
+        0,
+        1.5,
+        3
+      ],
+      "size": [
+        16,
+        3,
+        12
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 0,
+      "designTag": "机关解谜核心 (Mechanism)",
+      "notes": "玩家踏入此区域后唤醒1F重装守卫进入警戒状态。",
+      "linkedId": "obj_terminal_north"
+    },
+    {
+      "id": "obj_terminal_north",
+      "name": "2F 核心控制台终端",
+      "type": "cylinder",
+      "role": "objective",
+      "position": [
+        0,
+        4,
+        -10.5
+      ],
+      "size": [
+        1.6,
+        2,
+        1.6
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "floor": 1,
+      "designTag": "视觉引导地标 (Landmark)",
+      "notes": "本关终极夺取目标 (Weenie)，位于2F北侧中央高台，开局即可遥望。"
+    }
+  ],
+  "paths": [
+    {
+      "id": "path_golden",
+      "name": "主线推进路线 (Golden Path)",
+      "type": "main",
+      "points": [
+        [
+          0,
+          0.2,
+          14
+        ],
+        [
+          -3.5,
+          0.2,
+          9
+        ],
+        [
+          -10,
+          0.2,
+          8.5
+        ],
+        [
+          -10,
+          3.2,
+          2.5
+        ],
+        [
+          -10,
+          3.2,
+          -9.5
+        ],
+        [
+          0,
+          3.2,
+          -10
+        ]
+      ],
+      "oneWay": false
+    },
+    {
+      "id": "path_flank_east",
+      "name": "东侧斜坡包抄路线 (East Flank)",
+      "type": "flank",
+      "points": [
+        [
+          0,
+          0.2,
+          14
+        ],
+        [
+          3.5,
+          0.2,
+          9
+        ],
+        [
+          10,
+          0.2,
+          1
+        ],
+        [
+          10,
+          3.2,
+          -7.5
+        ],
+        [
+          0,
+          3.2,
+          -10
+        ]
+      ],
+      "oneWay": false
+    }
+  ],
+  "pois": [
+    {
+      "id": "poi_spawn",
+      "name": "玩家初始出生点",
+      "category": "spawn_player",
+      "position": [
+        0,
+        0,
+        14.5
+      ],
+      "yaw": 0,
+      "showVision": true,
+      "fov": 95,
+      "visionRange": 26,
+      "eyeHeight": 1.65
+    },
+    {
+      "id": "poi_sniper_north",
+      "name": "2F 狙击哨兵视野",
+      "category": "sniper_nest",
+      "position": [
+        2.5,
+        3,
+        -7.8
+      ],
+      "yaw": 175,
+      "showVision": true,
+      "fov": 75,
+      "visionRange": 24,
+      "eyeHeight": 1.65,
+      "enemyConfig": {
+        "patrolMode": "pingpong",
+        "waypoints": [
+          [
+            -4,
+            3,
+            -8.5
+          ],
+          [
+            6,
+            3,
+            -8.5
+          ]
+        ],
+        "autoPathfind": true,
+        "patrolSpeed": 2.4,
+        "chaseSpeed": 5,
+        "hearingRange": 6,
+        "targetId": "poi_spawn"
+      },
+      "notes": "压制东侧与中场，被中央全身掩体及2F楼板边缘遮挡出安全盲区"
+    },
+    {
+      "id": "poi_guard_mid",
+      "name": "1F 中庭巡逻重装守卫",
+      "category": "spawn_enemy",
+      "position": [
+        -3.5,
+        0,
+        -1.5
+      ],
+      "yaw": 160,
+      "showVision": true,
+      "fov": 95,
+      "visionRange": 15,
+      "eyeHeight": 1.65,
+      "enemyConfig": {
+        "patrolMode": "loop",
+        "waypoints": [
+          [
+            -6.5,
+            0,
+            5.5
+          ],
+          [
+            6,
+            0,
+            5.5
+          ],
+          [
+            7,
+            0,
+            -4
+          ]
+        ],
+        "autoPathfind": true,
+        "patrolSpeed": 3,
+        "chaseSpeed": 6,
+        "hearingRange": 8,
+        "targetId": "poi_spawn"
+      }
+    },
+    {
+      "id": "poi_objective_console",
+      "name": "主线终端夺取点",
+      "category": "objective",
+      "position": [
+        0,
+        3,
+        -10.5
+      ],
+      "yaw": 180,
+      "showVision": false,
+      "fov": 90,
+      "visionRange": 10,
+      "eyeHeight": 1.65
+    }
+  ],
+  "jumps": [
+    {
+      "id": "jmp_catwalk_to_island",
+      "name": "2F 连廊跳往中央悬空平台",
+      "from": [
+        -8,
+        3,
+        -2
+      ],
+      "to": [
+        -4.5,
+        3,
+        -2
+      ],
+      "mode": "normal"
+    },
+    {
+      "id": "jmp_island_to_balcony",
+      "name": "中央悬空台跳往北侧狙击台",
+      "from": [
+        -2,
+        3,
+        -4
+      ],
+      "to": [
+        -2,
+        3,
+        -7
+      ],
+      "mode": "sprint"
+    }
+  ],
+  "sightlines": [
+    {
+      "id": "los_sniper_to_cover",
+      "name": "狙击手→前排掩体视线尺",
+      "fromId": "poi_sniper_north",
+      "toId": "cov_south_low_2",
+      "fromPos": [
+        2.5,
+        4.65,
+        -7.8
+      ],
+      "toPos": [
+        3.5,
+        1.1,
+        8
+      ],
+      "fromHeightOffset": 1.65,
+      "toHeightOffset": 0.2
+    }
+  ]
 }
